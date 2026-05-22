@@ -246,13 +246,33 @@ export default function Page() {
     finally { setSaving(false); }
   }
   async function askAI() {
+    if (!user) return;
     if (!question.trim()) return;
-    const q = question.trim(); setQuestion(''); setChat(c => [...c, { role: 'user', content: q }]); setSaving(true);
+
+    const q = question.trim();
+    setQuestion('');
+    setChat(c => [...c, { role: 'user', content: q }]);
+    setSaving(true);
+
     try {
-      const res = await fetch('/api/ai/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question: q, partnerName, currentUserId: user.uid, groupId, data: visible }) });
-      const json = await res.json(); setChat(c => [...c, { role: 'ai', content: json.answer || '回答を生成できませんでした。' }]);
-    } catch { setChat(c => [...c, { role: 'ai', content: 'AI回答に失敗しました。OPENAI_API_KEYを確認してください。' }]); }
-    finally { setSaving(false); }
+      const res = await fetch('/api/ai/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: q,
+          partnerName,
+          currentUserId: user.uid,
+          groupId,
+          data: visible,
+        }),
+      });
+      const json = await res.json();
+      setChat(c => [...c, { role: 'ai', content: json.answer || '回答を生成できませんでした。' }]);
+    } catch {
+      setChat(c => [...c, { role: 'ai', content: 'AI回答に失敗しました。OPENAI_API_KEYを確認してください。' }]);
+    } finally {
+      setSaving(false);
+    }
   }
   async function naturalAdd(text: string) {
     if (!text.trim()) return;

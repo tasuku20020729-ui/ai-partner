@@ -19,7 +19,7 @@ export async function POST(req: Request) {
         ownerName: item.ownerName || '',
         groupId: item.groupId,
         visibility: item.visibility || 'private',
-        aiReadable: item.aiReadable !== false,
+        aiReadable: Boolean(item.aiReadable ?? true),
         date: item.date || '',
         title: item.title || '',
         contentText: text,
