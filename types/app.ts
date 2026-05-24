@@ -23,7 +23,6 @@ export type Diary = BaseDoc & {
   mood?: string;
   tags: string[];
   photos?: string[];
-  location?: { name?: string; lat?: number; lng?: number };
 };
 
 export type EventItem = BaseDoc & {
