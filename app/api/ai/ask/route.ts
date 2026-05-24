@@ -5,6 +5,7 @@ import { cosineSimilarity, embedText } from '@/lib/rag';
 import { requireAuth, unauthorized } from '@/lib/serverAuth';
 
 type Body = { question: string; partnerName?: string; currentUserId?: string; groupId?: string; data: any };
+type QuestionIntent = 'expense' | 'event' | 'todo' | 'diary' | 'memo' | 'anniversary' | 'out_of_scope' | 'unknown';
 const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 const DAY = 86400000;
 const today = () => new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
@@ -157,12 +158,26 @@ function filterExpenseCategory(q: string, expenses: any[]) {
   if (/娯楽|映画|ゲーム|ライブ|コンサート|イベント|本|漫画|サブスク|Netflix|Spotify|カラオケ|遊び|チケット/.test(q)) return expenses.filter((e:any)=>e.category === 'entertainment');
   return expenses;
 }
+function classifyQuestion(q: string): QuestionIntent {
+  const text = q.trim();
+  if (!text) return 'unknown';
+  if (/天気|ニュース|株価|為替|一般知識|とは|教えて$|作って|翻訳|コード|プログラム|レシピ/.test(text) && !/日記|予定|ToDo|todo|タスク|支出|お金|メモ|記念日|誕生日|共有/.test(text)) return 'out_of_scope';
+  if (/記念日|誕生日|付き合った日|結婚記念/.test(text)) return 'anniversary';
+  if (/メモ|共有メモ|ノート/.test(text)) return 'memo';
+  if (/いくら|合計|平均|支出|使った|費用|出費|食費|デート代|交通費|日用品|医療費|娯楽費|旅行代|お金|金額|内訳|カテゴリ/.test(text)) return 'expense';
+  if (/ToDo|todo|タスク|課題|やること|未完了|完了済み|完了した|期限|提出/.test(text)) return 'todo';
+  if (/予定|スケジュール|空き|何がある|集合|会議|予約|イベント|リマインド/.test(text)) return 'event';
+  if (/日記|思い出|覚えてる|何した|どこ行った|楽しかった|嬉しかった|悲しかった|気分|振り返り/.test(text)) return 'diary';
+  return 'unknown';
+}
 function deterministicAnswer(body: Body) {
   const q = body.question || '';
+  const intent = classifyQuestion(q);
+  if (intent === 'out_of_scope') return 'このAIは登録された日記・予定・ToDo・支出・記念日・共有メモについて回答します。生活データに関する質問を入力してください。';
   const s = scoped(body);
   const rangeLabel = s.range?.label ? `${s.range.label}の` : '';
 
-  if (/いくら|合計|平均|支出|使った|費用|出費|食費|デート代|交通費/.test(q)) {
+  if (intent === 'expense') {
     const expenses = filterExpenseCategory(q, s.expenses).sort((a:any, b:any) => Number(b.amountBase || b.amount || 0) - Number(a.amountBase || a.amount || 0));
     const total = sumExpenses(expenses);
     const average = expenses.length ? total / expenses.length : 0;
@@ -176,13 +191,13 @@ function deterministicAnswer(body: Body) {
     return `${rangeLabel}参照可能な支出は ${expenses.length}件、合計 ${yen(total)} です。${expenses.length ? `平均は ${yen(average)} です。` : ''}${categoryLines ? `\n\nカテゴリ別:\n${categoryLines}` : ''}${detailLines ? `\n\n内訳:\n${detailLines}` : ''}`;
   }
 
-  if (/予定|スケジュール|空き|何がある|いつ/.test(q)) {
+  if (intent === 'event') {
     const events = s.events.sort((a:any, b:any) => String(a.startAt || '').localeCompare(String(b.startAt || '')));
     const lines = events.slice(0, 20).map((e:any)=>`・${formatDateTime(e.startAt)} ${e.title || '予定'}${e.location ? ` @${e.location}` : ''}（${e.ownerName || '不明'}）`).join('\n');
     return lines ? `${rangeLabel}予定は ${events.length}件あります。\n${lines}` : `${rangeLabel}参照可能な予定はありません。`;
   }
 
-  if (/ToDo|todo|タスク|課題|やること|未完了|完了/.test(q)) {
+  if (intent === 'todo') {
     const wantsDone = /完了済み|完了した/.test(q);
     const todos = s.todos
       .filter((t:any)=>wantsDone ? t.status === 'done' : t.status !== 'done')
@@ -194,13 +209,13 @@ function deterministicAnswer(body: Body) {
     return lines ? `${rangeLabel}${wantsDone ? '完了済み' : '未完了'}ToDoは ${todos.length}件あります。\n${lines}` : `${rangeLabel}${wantsDone ? '完了済み' : '未完了'}ToDoはありません。`;
   }
 
-  if (/記念日|誕生日/.test(q)) {
+  if (intent === 'anniversary') {
     const anniversaries = (s.anniversaries || []).sort((a:any, b:any) => String(a.date || '').localeCompare(String(b.date || '')));
     const lines = anniversaries.map((a:any)=>`・${a.date} ${a.title}${a.repeat === 'yearly' ? '（毎年）' : ''}`).join('\n');
     return lines || '登録済みの記念日はありません。';
   }
 
-  if (/メモ|共有/.test(q)) {
+  if (intent === 'memo') {
     const lines = (s.sharedNotes || []).map((n:any)=>`・${n.title}: ${n.content}`).join('\n');
     return lines || '共有メモはありません。';
   }
@@ -278,9 +293,10 @@ export async function POST(req: Request) {
     throw e;
   }
   const body = { ...rawBody, currentUserId: auth.uid, groupId: auth.groupId };
+  const intent = classifyQuestion(body.question || '');
   const filtered = scoped(body);
   const exactAnswer = deterministicAnswer(body);
-  if (exactAnswer) return Response.json({ answer: exactAnswer, deterministic: true });
+  if (exactAnswer) return Response.json({ answer: exactAnswer, deterministic: true, intent });
   if (!process.env.OPENAI_API_KEY) return Response.json({ answer: fallbackAnswer(body), fallback: true });
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const rag = await searchRagMemory(body);
@@ -305,7 +321,7 @@ export async function POST(req: Request) {
   const response = await client.responses.create({
     model,
     input: [
-      { role: 'system', content: `あなたはAI生活管理アプリのAIです。日記・予定・ToDo・支出・記念日・共有メモだけを根拠に日本語で回答します。今日=${new Date().toLocaleDateString('ja-JP',{timeZone:'Asia/Tokyo'})}。相手の呼び名=${body.partnerName || '彼女/彼氏'}。入力データ以外を推測しない。支出はamountBase(JPY)で計算し、必要なら内訳を示す。RAG類似検索結果がある場合は、曖昧な思い出検索・場所・感情・キーワード検索ではRAG結果を優先し、日付や金額の厳密集計は構造化データを優先する。` },
+      { role: 'system', content: `あなたはAI生活管理アプリのAIです。日記・予定・ToDo・支出・記念日・共有メモだけを根拠に日本語で回答します。今日=${new Date().toLocaleDateString('ja-JP',{timeZone:'Asia/Tokyo'})}。相手の呼び名=${body.partnerName || '彼女/彼氏'}。分類済み意図=${intent}。入力データ以外を推測しない。支出はamountBase(JPY)で計算し、必要なら内訳を示す。intent=diary または曖昧な思い出検索・感情・キーワード検索ではRAG結果を優先し、日付や金額の厳密集計は構造化データを優先する。intent=out_of_scopeなら生活データに関する質問だけ回答できると伝える。` },
       { role: 'user', content: `質問: ${body.question}
 
 期間推定: ${filtered.range ? `${iso(filtered.range.start)}〜${iso(filtered.range.end)}` : '指定なし'}
@@ -317,5 +333,5 @@ ${JSON.stringify(ragContext)}
 ${JSON.stringify(compactData)}` }
     ]
   });
-  return Response.json({ answer: response.output_text, ragUsed: rag.results.length > 0, ragCount: rag.results.length, ragUnavailable: rag.unavailable });
+  return Response.json({ answer: response.output_text, intent, ragUsed: rag.results.length > 0, ragCount: rag.results.length, ragUnavailable: rag.unavailable });
 }
