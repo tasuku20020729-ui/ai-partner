@@ -22,19 +22,98 @@ const expenseCategoryLabel: Record<string, string> = {
 };
 const priorityLabel: Record<string, string> = { high: '高', middle: '中', low: '低' };
 
+function dayRange(base: Date, offset: number, label: string) {
+  const start = new Date(base);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() + offset);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return { start, end, label };
+}
+function monthRange(base: Date, offset: number, label: string) {
+  const start = new Date(base);
+  start.setHours(0, 0, 0, 0);
+  start.setMonth(start.getMonth() + offset, 1);
+  const end = new Date(start);
+  end.setMonth(end.getMonth() + 1, 1);
+  return { start, end, label };
+}
+function yearRange(base: Date, offset: number, label: string) {
+  const start = new Date(base);
+  start.setFullYear(start.getFullYear() + offset, 0, 1);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setFullYear(end.getFullYear() + 1, 0, 1);
+  return { start, end, label };
+}
+function weekRange(base: Date, offsetWeeks: number, label: string) {
+  const start = new Date(base);
+  start.setHours(0, 0, 0, 0);
+  const day = (start.getDay() + 6) % 7;
+  start.setDate(start.getDate() - day + offsetWeeks * 7);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 7);
+  return { start, end, label };
+}
+function monthEndRange(base: Date, offset: number, label: string) {
+  const end = monthRange(base, offset, label).end;
+  const start = new Date(end);
+  start.setDate(start.getDate() - 7);
+  return { start, end, label };
+}
+function explicitDateRange(q: string, base: Date) {
+  const slash = q.match(/(?:(20\d{2})[\/年.-])?(\d{1,2})[\/月.-](\d{1,2})日?/);
+  if (slash) {
+    const year = slash[1] ? Number(slash[1]) : base.getFullYear();
+    const month = Number(slash[2]);
+    const day = Number(slash[3]);
+    const start = new Date(base); start.setFullYear(year, month - 1, day); start.setHours(0, 0, 0, 0);
+    const end = new Date(start); end.setDate(end.getDate() + 1);
+    return { start, end, label: `${month}/${day}` };
+  }
+  const dayOnly = q.match(/(?:^|[^\d])(\d{1,2})日(?:[^\d]|$)/);
+  if (dayOnly && !/今日|明日|昨日|後日|日前|日後/.test(q)) {
+    const day = Number(dayOnly[1]);
+    const start = new Date(base); start.setDate(day); start.setHours(0, 0, 0, 0);
+    const end = new Date(start); end.setDate(end.getDate() + 1);
+    return { start, end, label: `${start.getMonth() + 1}/${day}` };
+  }
+  return null;
+}
 function rangeFromQuestion(q: string) {
   const base = today();
-  const start = new Date(base); start.setHours(0, 0, 0, 0);
-  const end = new Date(start); end.setDate(end.getDate() + 1);
-  if (/明後日/.test(q)) { start.setDate(start.getDate() + 2); end.setDate(end.getDate() + 2); return { start, end, label: '明後日' }; }
-  if (/明日/.test(q)) { start.setDate(start.getDate() + 1); end.setDate(end.getDate() + 1); return { start, end, label: '明日' }; }
-  if (/今日/.test(q)) return { start, end, label: '今日' };
-  if (/昨日/.test(q)) { start.setDate(start.getDate() - 1); end.setDate(end.getDate() - 1); return { start, end, label: '昨日' }; }
-  if (/今月/.test(q)) { start.setDate(1); end.setMonth(start.getMonth() + 1, 1); return { start, end, label: '今月' }; }
-  if (/先月/.test(q)) { start.setMonth(start.getMonth() - 1, 1); end.setMonth(start.getMonth() + 1, 1); return { start, end, label: '先月' }; }
-  if (/今週/.test(q)) { const day = (start.getDay() + 6) % 7; start.setDate(start.getDate() - day); end.setTime(start.getTime()); end.setDate(end.getDate() + 7); return { start, end, label: '今週' }; }
-  if (/先週/.test(q)) { const day = (start.getDay() + 6) % 7; start.setDate(start.getDate() - day - 7); end.setTime(start.getTime()); end.setDate(end.getDate() + 7); return { start, end, label: '先週' }; }
-  if (/来週/.test(q)) { const day = (start.getDay() + 6) % 7; start.setDate(start.getDate() - day + 7); end.setTime(start.getTime()); end.setDate(end.getDate() + 7); return { start, end, label: '来週' }; }
+  const explicit = explicitDateRange(q, base);
+  if (explicit) return explicit;
+  const daysAgo = q.match(/(\d{1,2})日前/);
+  if (daysAgo) return dayRange(base, -Number(daysAgo[1]), `${daysAgo[1]}日前`);
+  const daysLater = q.match(/(\d{1,2})日後/);
+  if (daysLater) return dayRange(base, Number(daysLater[1]), `${daysLater[1]}日後`);
+  if (/明後日/.test(q)) return dayRange(base, 2, '明後日');
+  if (/明日/.test(q)) return dayRange(base, 1, '明日');
+  if (/今日|本日/.test(q)) return dayRange(base, 0, '今日');
+  if (/一昨日/.test(q)) return dayRange(base, -2, '一昨日');
+  if (/昨日/.test(q)) return dayRange(base, -1, '昨日');
+  if (/来週末/.test(q)) {
+    const week = weekRange(base, 1, '来週末');
+    const start = new Date(week.start); start.setDate(start.getDate() + 5);
+    return { start, end: week.end, label: '来週末' };
+  }
+  if (/今週末|週末/.test(q)) {
+    const week = weekRange(base, 0, '今週末');
+    const start = new Date(week.start); start.setDate(start.getDate() + 5);
+    return { start, end: week.end, label: '今週末' };
+  }
+  if (/今月末/.test(q)) return monthEndRange(base, 0, '今月末');
+  if (/来月末/.test(q)) return monthEndRange(base, 1, '来月末');
+  if (/今年|本年/.test(q)) return yearRange(base, 0, '今年');
+  if (/去年|昨年/.test(q)) return yearRange(base, -1, '去年');
+  if (/来年/.test(q)) return yearRange(base, 1, '来年');
+  if (/先月/.test(q)) return monthRange(base, -1, '先月');
+  if (/来月/.test(q)) return monthRange(base, 1, '来月');
+  if (/今月/.test(q)) return monthRange(base, 0, '今月');
+  if (/先週/.test(q)) return weekRange(base, -1, '先週');
+  if (/来週/.test(q)) return weekRange(base, 1, '来週');
+  if (/今週/.test(q)) return weekRange(base, 0, '今週');
   return null;
 }
 function inRange(dateText: string | undefined, range: ReturnType<typeof rangeFromQuestion>) {
