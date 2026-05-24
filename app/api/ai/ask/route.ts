@@ -4,7 +4,7 @@ import { adminDb } from '@/lib/firebaseAdmin';
 import { cosineSimilarity, embedText } from '@/lib/rag';
 import { requireAuth, unauthorized } from '@/lib/serverAuth';
 
-type Body = { question: string; partnerName?: string; currentUserId?: string; groupId?: string; data: any };
+type Body = { question: string; partnerName?: string; partnerRelationship?: string; currentUserId?: string; groupId?: string; data: any };
 type QuestionIntent = 'expense' | 'event' | 'todo' | 'diary' | 'memo' | 'anniversary' | 'out_of_scope' | 'unknown';
 const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 const DAY = 86400000;
@@ -122,9 +122,26 @@ function inRange(dateText: string | undefined, range: ReturnType<typeof rangeFro
   const d = new Date(dateText); if (Number.isNaN(d.getTime())) return true;
   return d >= range.start && d < range.end;
 }
-function ownerMatch(item: any, q: string, partnerName?: string, currentUserId?: string) {
-  if (/彼女|彼氏|相手|パートナー/.test(q) || (partnerName && q.includes(partnerName))) return item.userId !== currentUserId;
-  if (/自分|私|俺|僕/.test(q)) return item.userId === currentUserId;
+function escapeRegExp(text: string) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+function wantsAllOwners(q: string) {
+  return /2人|二人|ふたり|両方|全員|全部|全体|みんな|共有/.test(q);
+}
+function wantsSelfOwner(q: string) {
+  return /自分の|私の|俺の|僕の|わたしの|自分が|私が|俺が|僕が|自分だけ/.test(q);
+}
+function wantsPartnerOwner(q: string, partnerName?: string, partnerRelationship?: string) {
+  if (/彼女の|彼氏の|相手の|パートナーの|向こうの/.test(q)) return true;
+  if (partnerName && new RegExp(`${escapeRegExp(partnerName)}(の|が|は|だけ)`).test(q)) return true;
+  return Boolean(partnerRelationship && new RegExp(`${escapeRegExp(partnerRelationship)}(の|が|は|だけ)`).test(q));
+}
+function ownerMatch(item: any, q: string, partnerName?: string, partnerRelationship?: string, currentUserId?: string) {
+  if (wantsAllOwners(q)) return true;
+  if (item.ownerName && q.includes(item.ownerName)) return true;
+  if (wantsPartnerOwner(q, partnerName, partnerRelationship)) return item.userId !== currentUserId;
+  if (wantsSelfOwner(q)) return item.userId === currentUserId;
+  if (item.ownerName && /さん|くん|ちゃん/.test(q)) return q.includes(item.ownerName);
   return true;
 }
 function scoped(body: Body) {
@@ -133,10 +150,10 @@ function scoped(body: Body) {
   const data = body.data || {};
   return {
     range,
-    diaries: (data.diaries || []).filter((d:any)=>inRange(d.date, range) && ownerMatch(d, q, body.partnerName, body.currentUserId)),
-    events: (data.events || []).filter((e:any)=>inRange(e.startAt, range) && ownerMatch(e, q, body.partnerName, body.currentUserId)),
-    todos: (data.todos || []).filter((t:any)=>inRange(t.dueAt || t.createdAt, range) && ownerMatch(t, q, body.partnerName, body.currentUserId)),
-    expenses: (data.expenses || []).filter((e:any)=>inRange(e.date, range) && ownerMatch(e, q, body.partnerName, body.currentUserId)),
+    diaries: (data.diaries || []).filter((d:any)=>inRange(d.date, range) && ownerMatch(d, q, body.partnerName, body.partnerRelationship, body.currentUserId)),
+    events: (data.events || []).filter((e:any)=>inRange(e.startAt, range) && ownerMatch(e, q, body.partnerName, body.partnerRelationship, body.currentUserId)),
+    todos: (data.todos || []).filter((t:any)=>inRange(t.dueAt || t.createdAt, range) && ownerMatch(t, q, body.partnerName, body.partnerRelationship, body.currentUserId)),
+    expenses: (data.expenses || []).filter((e:any)=>inRange(e.date, range) && ownerMatch(e, q, body.partnerName, body.partnerRelationship, body.currentUserId)),
     anniversaries: data.anniversaries || [],
     sharedNotes: data.sharedNotes || []
   };
@@ -228,14 +245,18 @@ async function searchRagMemory(body: Body) {
   try {
     const qEmbedding = await embedText(body.question);
     const snap = await adminDb().collection('aiMemory').where('groupId', '==', body.groupId).get();
-    const wantsPartner = /彼女|彼氏|相手|パートナー/.test(body.question) || Boolean(body.partnerName && body.question.includes(body.partnerName));
-    const wantsSelf = /自分|私|俺|僕/.test(body.question);
+    const wantsAll = wantsAllOwners(body.question);
+    const wantsPartner = wantsPartnerOwner(body.question, body.partnerName, body.partnerRelationship);
+    const wantsSelf = wantsSelfOwner(body.question);
     const candidates = snap.docs.map(d => ({ id: d.id, ...d.data() } as any)).filter((m:any) => {
       if (m.aiReadable === false) return false;
       const isMine = m.userId === body.currentUserId;
       if (!isMine && m.visibility !== 'shared') return false;
+      if (wantsAll) return true;
+      if (m.ownerName && body.question.includes(m.ownerName)) return true;
       if (wantsPartner) return !isMine;
       if (wantsSelf) return isMine;
+      if (m.ownerName && /さん|くん|ちゃん/.test(body.question)) return body.question.includes(m.ownerName);
       return true;
     });
     const scored = candidates
@@ -321,7 +342,7 @@ export async function POST(req: Request) {
   const response = await client.responses.create({
     model,
     input: [
-      { role: 'system', content: `あなたはAI生活管理アプリのAIです。日記・予定・ToDo・支出・記念日・共有メモだけを根拠に日本語で回答します。今日=${new Date().toLocaleDateString('ja-JP',{timeZone:'Asia/Tokyo'})}。相手の呼び名=${body.partnerName || '彼女/彼氏'}。分類済み意図=${intent}。入力データ以外を推測しない。支出はamountBase(JPY)で計算し、必要なら内訳を示す。intent=diary または曖昧な思い出検索・感情・キーワード検索ではRAG結果を優先し、日付や金額の厳密集計は構造化データを優先する。intent=out_of_scopeなら生活データに関する質問だけ回答できると伝える。` },
+      { role: 'system', content: `あなたはAI生活管理アプリのAIです。日記・予定・ToDo・支出・記念日・共有メモだけを根拠に日本語で回答します。今日=${new Date().toLocaleDateString('ja-JP',{timeZone:'Asia/Tokyo'})}。相手の名前=${body.partnerName || '未設定'}。相手との関係性=${body.partnerRelationship || '彼女/彼氏'}。分類済み意図=${intent}。入力データ以外を推測しない。支出はamountBase(JPY)で計算し、必要なら内訳を示す。相手の名前や関係性で質問された場合は相手のデータとして扱う。intent=diary または曖昧な思い出検索・感情・キーワード検索ではRAG結果を優先し、日付や金額の厳密集計は構造化データを優先する。intent=out_of_scopeなら生活データに関する質問だけ回答できると伝える。` },
       { role: 'user', content: `質問: ${body.question}
 
 期間推定: ${filtered.range ? `${iso(filtered.range.start)}〜${iso(filtered.range.end)}` : '指定なし'}

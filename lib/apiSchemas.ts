@@ -32,6 +32,7 @@ export const textBodySchema = z.object({
 export const askBodySchema = z.object({
   question: z.string().min(1).max(2000),
   partnerName: z.string().max(80).optional(),
+  partnerRelationship: z.string().max(80).optional(),
   currentUserId: z.string().optional(),
   groupId: z.string().optional(),
   data: z.unknown().optional()
