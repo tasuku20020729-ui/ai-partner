@@ -114,6 +114,7 @@ export default function Page() {
   const [pushStatus, setPushStatus] = useState('未設定');
   const [selectedDate, setSelectedDate] = useState(todayIso());
   const [calendarMonth, setCalendarMonth] = useState(todayIso());
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
 
   useEffect(() => onAuthStateChanged(auth, async (u) => {
     setUser(u);
@@ -187,7 +188,13 @@ export default function Page() {
   const openAddForDate = (mode: AddMode, date = selectedDate) => {
     setSelectedDate(date);
     setCalendarMonth(date);
+    setDatePickerOpen(false);
     setAddMode(mode);
+  };
+  const chooseDate = (date: string) => {
+    setSelectedDate(date);
+    setCalendarMonth(date);
+    setDatePickerOpen(true);
   };
 
   if (loading) return <div className="shell"><main className="content"><div className="card">読み込み中...</div></main></div>;
@@ -196,17 +203,17 @@ export default function Page() {
   return <div className="shell">
     <header className="top"><div className="brand"><div><h1>AI Life Diary v5</h1><p>カレンダー・ToDo・日記・支出</p></div><div className="avatar">{(user.displayName || user.email || 'U').slice(0, 1).toUpperCase()}</div></div></header>
     <main className="content">
-      {tab === 'home' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} setTab={setTab} />}
+      {tab === 'home' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} chooseDate={chooseDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} setTab={setTab} />}
       {tab === 'diary' && <DiaryView diaries={diaries} currentUserId={user.uid} onDelete={remove} />}
-      {tab === 'calendar' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} setTab={setTab} />}
+      {tab === 'calendar' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} chooseDate={chooseDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} setTab={setTab} />}
       {tab === 'todo' && <TodoView todos={todos} currentUserId={user.uid} toggleTodo={toggleTodo} onDelete={remove} />}
       {tab === 'expense' && <ExpenseView expenses={expenses} setAddMode={setAddMode} />}
       {tab === 'ai' && <AIView chat={chat} question={question} setQuestion={setQuestion} ask={askAI} saving={saving} naturalAdd={naturalAdd} rebuildRagIndex={rebuildRagIndex} />}
       {tab === 'notes' && <NotesView notes={sharedNotes} currentUserId={user.uid} onDelete={remove} setAddMode={setAddMode} />}
       {tab === 'settings' && <SettingsView user={user} groupId={groupId} setGroupId={saveGroupId} partnerName={partnerName} setPartnerName={savePartnerName} reload={() => loadAll()} notificationEnabled={notificationEnabled} setNotificationEnabled={enableNotifications} pushStatus={pushStatus} enablePush={enablePushNotifications} />}
     </main>
-    <button className="fab" onClick={() => openAddForDate('diary')}>＋</button>
     <BottomNav tab={tab} setTab={setTab} />
+    {datePickerOpen && <DateActionSheet selectedDate={selectedDate} close={() => setDatePickerOpen(false)} openAdd={openAddForDate} />}
     {addMode && <AddModal mode={addMode} setMode={setAddMode} save={saveDoc} user={user} groupId={groupId} partnerName={partnerName} selectedDate={selectedDate} />}
   </div>;
 
@@ -351,7 +358,7 @@ function Login(p: { name: string; setName: (v: string) => void; email: string; s
   return <div className="shell"><main className="content" style={{ paddingTop: 64 }}><div className="card"><h1>AI Life Diary v5</h1><p className="muted">Firebaseログインで開始します。第5版ではEmbeddingを使った本格RAG検索を追加しています。</p><input className="input" placeholder="名前（新規登録時）" value={p.name} onChange={e => p.setName(e.target.value)} /><input className="input" placeholder="メール" value={p.email} onChange={e => p.setEmail(e.target.value)} /><input className="input" type="password" placeholder="パスワード" value={p.password} onChange={e => p.setPassword(e.target.value)} /><div className="grid"><button className="btn" disabled={p.saving} onClick={() => p.login(false)}>ログイン</button><button className="btn secondary" disabled={p.saving} onClick={() => p.login(true)}>新規登録</button></div></div></main></div>;
 }
 
-function CalendarHomeView({ selectedDate, setSelectedDate, calendarMonth, setCalendarMonth, diaries, events, todos, expenses, anniversaries, monthExpense, openAdd, setTab }: any) {
+function CalendarHomeView({ selectedDate, setSelectedDate, chooseDate, calendarMonth, setCalendarMonth, diaries, events, todos, expenses, anniversaries, monthExpense, openAdd, setTab }: any) {
   const [year, month] = calendarMonth.slice(0, 7).split('-').map(Number);
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
   const blanks = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
@@ -378,7 +385,7 @@ function CalendarHomeView({ selectedDate, setSelectedDate, calendarMonth, setCal
         if (!day) return <div key={`blank_${i}`} className="day-cell blank" />;
         const date = dateFromMonthDay(calendarMonth, day);
         const marks = hasOnDate(date);
-        return <button key={date} className={`day-cell ${date === selectedDate ? 'selected' : ''} ${date === todayIso() ? 'today' : ''}`} onClick={() => setSelectedDate(date)}><span>{day}</span><div className="marks">{marks.event && <i className="event" />}{marks.todo && <i className="todo" />}{marks.diary && <i className="diary" />}{marks.expense && <i className="expense" />}{marks.anniversary && <i className="anniv" />}</div></button>;
+        return <button key={date} className={`day-cell ${date === selectedDate ? 'selected' : ''} ${date === todayIso() ? 'today' : ''}`} onClick={() => chooseDate(date)}><span>{day}</span><div className="marks">{marks.event && <i className="event" />}{marks.todo && <i className="todo" />}{marks.diary && <i className="diary" />}{marks.expense && <i className="expense" />}{marks.anniversary && <i className="anniv" />}</div></button>;
       })}</div>
     </section>
     <section className="selected-day-panel">
@@ -396,6 +403,10 @@ function CalendarHomeView({ selectedDate, setSelectedDate, calendarMonth, setCal
   </>;
 }
 
+function DateActionSheet({ selectedDate, close, openAdd }: { selectedDate: string; close: () => void; openAdd: (mode: AddMode, date?: string) => void }) {
+  return <div className="date-sheet-backdrop" onClick={close}><div className="date-sheet" onClick={e => e.stopPropagation()}><div className="row"><div><p className="eyebrow">追加先を選択</p><h3>{new Date(`${selectedDate}T00:00:00+09:00`).toLocaleDateString('ja-JP', { dateStyle: 'full' })}</h3></div><button className="icon-btn" onClick={close}>×</button></div><div className="date-sheet-actions"><button onClick={() => openAdd('diary', selectedDate)}><NotebookPen size={18} />日記を書く</button><button onClick={() => openAdd('todo', selectedDate)}><CheckSquare size={18} />ToDoを追加</button><button onClick={() => openAdd('event', selectedDate)}><CalendarDays size={18} />予定を追加</button><button onClick={() => openAdd('expense', selectedDate)}><ReceiptText size={18} />支出を追加</button></div></div></div>;
+}
+
 function HomeView({ setAddMode, todayEvents, openTodos, monthExpense, setTab, memoryCards, reminderCards }: any) {
   return <><section className="hero"><p>今日のまとめ</p><h2>{new Date().toLocaleDateString('ja-JP', { dateStyle: 'full' })}</h2><div className="quick"><button onClick={() => setAddMode('diary')}>日記</button><button onClick={() => setAddMode('event')}>予定</button><button onClick={() => setAddMode('todo')}>ToDo</button><button onClick={() => setAddMode('expense')}>支出</button></div></section><div className="grid"><div className="card"><h3>今日の予定</h3>{todayEvents.length ? todayEvents.map((e: EventItem) => <p key={e.id}>・{new Date(e.startAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })} {e.title}</p>) : <p className="muted">予定なし</p>}</div><div className="card"><h3>未完了ToDo</h3>{openTodos.slice(0, 5).map((t: Todo) => <p key={t.id}>・{t.title}</p>)}{!openTodos.length && <p className="muted">未完了なし</p>}</div></div><div className="card" onClick={() => setTab('expense')}><h3>今月の支出</h3><div className="big">{yen(monthExpense)}</div><p className="muted">固定レート換算。為替自動取得は除外済み。</p></div><div className="card"><h3>通知センター</h3>{reminderCards.length ? reminderCards.map((m: string, i: number) => <p key={i}>・{m}</p>) : <p className="muted">直近のリマインドはありません。</p>}</div><div className="card"><h3>振り返りカード</h3>{memoryCards.length ? memoryCards.map((m: string, i: number) => <p key={i}>・{m}</p>) : <p className="muted">日記や支出を登録すると表示されます。</p>}</div></>;
 }
@@ -410,7 +421,7 @@ function SettingsView({ user, groupId, setGroupId, partnerName, setPartnerName, 
   const copyCode = async () => { await navigator.clipboard?.writeText(groupId); alert('共有IDをコピーしました'); };
   return <Section title="設定"><div className="card"><h3><Users size={18}/> カップル共有</h3><p className="muted">同じ共有IDを2人で設定すると、sharedにした予定・ToDo・日記・支出・メモを共有できます。</p><input className="input" value={groupId} onChange={e => setGroupId(e.target.value)} /><div className="grid"><button className="btn secondary" onClick={() => setGroupId(generateCode())}><Share2 size={16}/> 招待コードを作成</button><button className="btn secondary" onClick={copyCode}><Copy size={16}/> コピー</button></div><input className="input" value={partnerName} onChange={e => setPartnerName(e.target.value)} placeholder="相手の呼び名（例: 彼女）" /><button className="btn secondary" onClick={reload}>共有データを再読み込み</button><p className="muted">使い方: 片方が招待コードを作成 → コピーして相手に送る → 相手が同じ共有IDに設定。</p></div><div className="card"><h3><Bell size={18}/> 通知</h3><label><input type="checkbox" checked={notificationEnabled} onChange={e => setNotificationEnabled(e.target.checked)} /> アプリ起動中の通知チェックを有効化</label><button className="btn" onClick={enablePush}>PWA Push通知を有効化</button><p className="muted">状態: {pushStatus}</p><p className="muted">iPhoneはSafariで開く → 共有 → ホーム画面に追加 → 追加したアイコンから開いて通知許可、の順に設定してください。</p></div><button className="btn danger" onClick={() => signOut(auth)}>ログアウト</button><p className="muted">ログイン: {user.email}</p></Section>; }
 function Section({ title, children }: any) { return <><h2 className="title">{title}</h2>{children}</>; }
-function BottomNav({ tab, setTab }: any) { const items = [['home', Home, 'ホーム'], ['diary', NotebookPen, '日記'], ['calendar', CalendarDays, '予定'], ['todo', CheckSquare, 'ToDo'], ['expense', ReceiptText, '支出'], ['ai', MessageCircle, 'AI'], ['notes', StickyNote, 'メモ'], ['settings', Settings, '設定']] as const; return <nav className="bottom">{items.map(([key, Icon, label]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}><Icon size={18} /><span>{label}</span></button>)}</nav>; }
+function BottomNav({ tab, setTab }: any) { const items = [['home', Home, 'ホーム'], ['ai', MessageCircle, 'AI'], ['notes', StickyNote, 'メモ'], ['settings', Settings, '設定']] as const; return <nav className="bottom compact">{items.map(([key, Icon, label]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}><Icon size={18} /><span>{label}</span></button>)}</nav>; }
 
 function AddModal({ mode, setMode, save, user, partnerName, selectedDate }: { mode: AddMode; setMode: (m: AddMode) => void; save: (m: AddMode, d: any) => void; user: User; groupId: string; partnerName: string; selectedDate: string }) {
   const [form, setForm] = useState<Record<string, any>>({ date: selectedDate, startAt: dateTimeOnDate(selectedDate), dueAt: selectedDate, priority: 'middle', status: 'open', currency: 'JPY', category: 'food', visibility: 'private', aiReadable: true, repeat: 'yearly' });
