@@ -1,12 +1,12 @@
 :root {
-  --bg: #f4f6fb;
+  --bg: #f6f7f4;
   --card: #ffffff;
   --ink: #111827;
   --muted: #64748b;
-  --line: #dbe3ef;
-  --brand: #2563eb;
-  --brand-dark: #1d4ed8;
-  --brand-soft: #dbeafe;
+  --line: #d8ded8;
+  --brand: #0f766e;
+  --brand-dark: #115e59;
+  --brand-soft: #ccfbf1;
   --success: #16a34a;
   --success-dark: #15803d;
   --warning: #f59e0b;
@@ -20,7 +20,7 @@ html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
   background:
-    radial-gradient(circle at top left, rgba(37, 99, 235, 0.10), transparent 32%),
+    radial-gradient(circle at top left, rgba(15, 118, 110, 0.10), transparent 32%),
     linear-gradient(180deg, #fbfdff 0%, var(--bg) 100%);
   color: var(--ink);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -47,12 +47,12 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   border-bottom: 1px solid var(--line);
 }
 .brand { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
-.brand h1 { font-size: 24px; margin: 0; letter-spacing: -0.04em; }
+.brand h1 { font-size: 24px; margin: 0; letter-spacing: 0; }
 .brand p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
 .avatar {
   width: 44px; height: 44px; flex: 0 0 auto;
-  border-radius: 16px;
-  background: linear-gradient(135deg, var(--brand), #7c3aed);
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--brand), #4f46e5);
   color: #fff; display: grid; place-items: center; font-weight: 900;
   box-shadow: 0 10px 24px rgba(37, 99, 235, 0.22);
 }
@@ -61,17 +61,17 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .hero {
   background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
   color: #fff;
-  border-radius: 28px;
+  border-radius: 8px;
   padding: 20px;
   margin-bottom: 16px;
   box-shadow: 0 20px 48px rgba(37, 99, 235, 0.24);
 }
 .hero p { margin: 0 0 5px; opacity: 0.9; }
-.hero h2 { margin: 0 0 18px; font-size: 22px; letter-spacing: -0.03em; }
+.hero h2 { margin: 0 0 18px; font-size: 22px; letter-spacing: 0; }
 .quick { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .quick button {
   border: 1px solid rgba(255,255,255,0.38);
-  border-radius: 16px;
+  border-radius: 8px;
   background: rgba(255,255,255,0.18);
   color: #fff;
   padding: 12px 6px;
@@ -79,10 +79,143 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .quick button:active { transform: translateY(1px); }
 
+.calendar-hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  background: #0f766e;
+  color: #fff;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 12px;
+  box-shadow: 0 16px 34px rgba(15, 118, 110, 0.16);
+}
+.calendar-hero p { margin: 0 0 4px; opacity: 0.9; font-weight: 800; font-size: 12px; }
+.calendar-hero h2 { margin: 0; font-size: 22px; }
+.calendar-hero .btn.secondary { border-color: rgba(255,255,255,0.6); color: #fff; background: rgba(255,255,255,0.14); }
+.calendar-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: var(--shadow);
+  margin-bottom: 12px;
+}
+.calendar-head {
+  display: grid;
+  grid-template-columns: 40px 1fr 40px;
+  align-items: center;
+  text-align: center;
+  margin-bottom: 10px;
+}
+.icon-btn {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+}
+.week-row, .month-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+.week-row span {
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  padding: 4px 0;
+}
+.day-cell {
+  aspect-ratio: 1 / 1;
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 5px 3px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 900;
+}
+.day-cell.blank { border-color: transparent; background: transparent; }
+.day-cell.today { border-color: var(--brand); }
+.day-cell.selected { background: var(--brand); color: #fff; border-color: var(--brand); }
+.marks {
+  display: flex;
+  justify-content: center;
+  gap: 2px;
+  min-height: 7px;
+  width: 100%;
+}
+.marks i {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.9;
+}
+.marks .event { background: #0f766e; }
+.marks .todo { background: #f59e0b; }
+.marks .diary { background: #4f46e5; }
+.marks .expense { background: #dc2626; }
+.marks .anniv { background: #db2777; }
+.day-cell.selected .marks i { background: #fff; }
+.selected-day-panel {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  box-shadow: var(--shadow);
+  margin-bottom: 12px;
+}
+.selected-day-panel h3 { margin: 0; font-size: 18px; }
+.day-total {
+  color: var(--brand);
+  font-weight: 950;
+  white-space: nowrap;
+}
+.date-actions { margin: 14px 0; }
+.date-actions button {
+  color: var(--brand);
+  background: #f8fafc;
+  border-color: var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.day-list {
+  display: grid;
+  gap: 8px;
+}
+.day-list p {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  line-height: 1.45;
+}
+.metric-card {
+  border: 1px solid var(--line);
+  text-align: left;
+  color: var(--ink);
+  cursor: pointer;
+}
+.metric-card span { display: block; color: var(--muted); font-size: 12px; font-weight: 800; }
+.metric-card b { display: block; margin-top: 6px; font-size: 22px; }
+
 .card, .notice-card {
   background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 24px;
+  border-radius: 8px;
   padding: 16px;
   box-shadow: var(--shadow);
   margin-bottom: 14px;
@@ -99,13 +232,13 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .eyebrow { margin: 0 0 4px; color: var(--brand); font-size: 12px; font-weight: 900; letter-spacing: 0.04em; }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.title { font-size: 20px; font-weight: 900; margin: 4px 0 12px; letter-spacing: -0.03em; }
+.title { font-size: 20px; font-weight: 900; margin: 4px 0 12px; letter-spacing: 0; }
 .muted { color: var(--muted); font-size: 13px; line-height: 1.6; }
-.big { font-size: 34px; font-weight: 950; letter-spacing: -0.05em; }
+.big { font-size: 34px; font-weight: 950; letter-spacing: 0; }
 .status-text {
   margin: 10px 0 0;
   padding: 10px 12px;
-  border-radius: 14px;
+  border-radius: 8px;
   background: #f0fdf4;
   color: #166534;
   border: 1px solid #bbf7d0;
@@ -115,7 +248,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 .btn {
   border: 0;
-  border-radius: 16px;
+  border-radius: 8px;
   background: var(--brand);
   color: #fff;
   padding: 12px 15px;
@@ -148,7 +281,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   width: 100%;
   border: 1px solid #cbd5e1;
   background: #ffffff;
-  border-radius: 16px;
+  border-radius: 8px;
   padding: 13px 14px;
   margin: 6px 0 10px;
   outline: none;
@@ -177,7 +310,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .bottom button {
   border: 0;
   background: transparent;
-  border-radius: 16px;
+  border-radius: 8px;
   padding: 8px 2px;
   color: var(--muted);
   font-size: 10px;
@@ -195,8 +328,8 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   border: 0;
   width: 60px;
   height: 60px;
-  border-radius: 24px;
-  background: linear-gradient(135deg, var(--brand), #7c3aed);
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--brand), #4f46e5);
   color: #fff;
   box-shadow: 0 18px 36px rgba(37, 99, 235, 0.28);
   font-size: 32px;
@@ -207,7 +340,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .tabs button {
   white-space: nowrap;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 8px;
   background: #fff;
   padding: 10px 13px;
   font-weight: 900;
@@ -226,7 +359,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .modal .panel {
   width: min(520px, 100%);
   background: white;
-  border-radius: 28px;
+  border-radius: 8px;
   padding: 18px;
   max-height: 88dvh;
   overflow: auto;
