@@ -10,6 +10,17 @@ const DAY = 86400000;
 const today = () => new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
 const iso = (d: Date) => d.toISOString().slice(0, 10);
 const yen = (n: number) => `${Math.round(n).toLocaleString()}円`;
+const expenseCategoryLabel: Record<string, string> = {
+  food: '食費',
+  daily_goods: '日用品',
+  dating: '交際費',
+  transport: '交通費',
+  travel: '旅行',
+  medical: '医療費',
+  entertainment: '娯楽',
+  other: 'その他'
+};
+const priorityLabel: Record<string, string> = { high: '高', middle: '中', low: '低' };
 
 function rangeFromQuestion(q: string) {
   const base = today();
@@ -19,11 +30,11 @@ function rangeFromQuestion(q: string) {
   if (/明日/.test(q)) { start.setDate(start.getDate() + 1); end.setDate(end.getDate() + 1); return { start, end, label: '明日' }; }
   if (/今日/.test(q)) return { start, end, label: '今日' };
   if (/昨日/.test(q)) { start.setDate(start.getDate() - 1); end.setDate(end.getDate() - 1); return { start, end, label: '昨日' }; }
-  if (/先週/.test(q)) { start.setDate(start.getDate() - 7); end.setTime(base.getTime()); return { start, end, label: '先週' }; }
-  if (/来週/.test(q)) { start.setDate(start.getDate() + 7); end.setDate(start.getDate() + 7); return { start, end, label: '来週' }; }
   if (/今月/.test(q)) { start.setDate(1); end.setMonth(start.getMonth() + 1, 1); return { start, end, label: '今月' }; }
   if (/先月/.test(q)) { start.setMonth(start.getMonth() - 1, 1); end.setMonth(start.getMonth() + 1, 1); return { start, end, label: '先月' }; }
-  if (/今週/.test(q)) { const day = start.getDay(); start.setDate(start.getDate() - day); end.setDate(start.getDate() + 7); return { start, end, label: '今週' }; }
+  if (/今週/.test(q)) { const day = (start.getDay() + 6) % 7; start.setDate(start.getDate() - day); end.setTime(start.getTime()); end.setDate(end.getDate() + 7); return { start, end, label: '今週' }; }
+  if (/先週/.test(q)) { const day = (start.getDay() + 6) % 7; start.setDate(start.getDate() - day - 7); end.setTime(start.getTime()); end.setDate(end.getDate() + 7); return { start, end, label: '先週' }; }
+  if (/来週/.test(q)) { const day = (start.getDay() + 6) % 7; start.setDate(start.getDate() - day + 7); end.setTime(start.getTime()); end.setDate(end.getDate() + 7); return { start, end, label: '来週' }; }
   return null;
 }
 function inRange(dateText: string | undefined, range: ReturnType<typeof rangeFromQuestion>) {
@@ -51,6 +62,71 @@ function scoped(body: Body) {
   };
 }
 function sumExpenses(list: any[]) { return list.reduce((s, e) => s + Number(e.amountBase || e.amount || 0), 0); }
+function formatDateTime(value?: string) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+function filterExpenseCategory(q: string, expenses: any[]) {
+  if (/食費|ごはん|ランチ|夕食|朝食|カフェ|飲食/.test(q)) return expenses.filter((e:any)=>e.category === 'food');
+  if (/デート|交際/.test(q)) return expenses.filter((e:any)=>e.category === 'dating');
+  if (/交通|電車|バス|タクシー|Grab/.test(q)) return expenses.filter((e:any)=>e.category === 'transport');
+  if (/旅行|ホテル|航空券/.test(q)) return expenses.filter((e:any)=>e.category === 'travel');
+  if (/医療|病院|薬/.test(q)) return expenses.filter((e:any)=>e.category === 'medical');
+  if (/日用品/.test(q)) return expenses.filter((e:any)=>e.category === 'daily_goods');
+  return expenses;
+}
+function deterministicAnswer(body: Body) {
+  const q = body.question || '';
+  const s = scoped(body);
+  const rangeLabel = s.range?.label ? `${s.range.label}の` : '';
+
+  if (/いくら|合計|平均|支出|使った|費用|出費|食費|デート代|交通費/.test(q)) {
+    const expenses = filterExpenseCategory(q, s.expenses).sort((a:any, b:any) => Number(b.amountBase || b.amount || 0) - Number(a.amountBase || a.amount || 0));
+    const total = sumExpenses(expenses);
+    const average = expenses.length ? total / expenses.length : 0;
+    const categoryTotals = expenses.reduce((acc: Record<string, number>, e:any) => {
+      const key = expenseCategoryLabel[e.category] || e.category || 'その他';
+      acc[key] = (acc[key] || 0) + Number(e.amountBase || e.amount || 0);
+      return acc;
+    }, {});
+    const categoryLines = Object.entries(categoryTotals).sort((a, b) => b[1] - a[1]).map(([k, v]) => `・${k}: ${yen(v)}`).join('\n');
+    const detailLines = expenses.slice(0, 12).map((e:any)=>`・${e.date || ''} ${e.title || e.shopName || '支出'}: ${yen(Number(e.amountBase || e.amount || 0))}${e.currency && e.currency !== 'JPY' ? `（元額 ${Number(e.amount || 0).toLocaleString()}${e.currency}）` : ''}`).join('\n');
+    return `${rangeLabel}参照可能な支出は ${expenses.length}件、合計 ${yen(total)} です。${expenses.length ? `平均は ${yen(average)} です。` : ''}${categoryLines ? `\n\nカテゴリ別:\n${categoryLines}` : ''}${detailLines ? `\n\n内訳:\n${detailLines}` : ''}`;
+  }
+
+  if (/予定|スケジュール|空き|何がある|いつ/.test(q)) {
+    const events = s.events.sort((a:any, b:any) => String(a.startAt || '').localeCompare(String(b.startAt || '')));
+    const lines = events.slice(0, 20).map((e:any)=>`・${formatDateTime(e.startAt)} ${e.title || '予定'}${e.location ? ` @${e.location}` : ''}（${e.ownerName || '不明'}）`).join('\n');
+    return lines ? `${rangeLabel}予定は ${events.length}件あります。\n${lines}` : `${rangeLabel}参照可能な予定はありません。`;
+  }
+
+  if (/ToDo|todo|タスク|課題|やること|未完了|完了/.test(q)) {
+    const wantsDone = /完了済み|完了した/.test(q);
+    const todos = s.todos
+      .filter((t:any)=>wantsDone ? t.status === 'done' : t.status !== 'done')
+      .sort((a:any, b:any) => {
+        const priority = { high: 0, middle: 1, low: 2 } as Record<string, number>;
+        return (priority[a.priority] ?? 3) - (priority[b.priority] ?? 3) || String(a.dueAt || '').localeCompare(String(b.dueAt || ''));
+      });
+    const lines = todos.slice(0, 20).map((t:any)=>`・${t.title}${t.dueAt ? ` 期限:${t.dueAt}` : ''} 優先度:${priorityLabel[t.priority] || t.priority || '-'}（${t.ownerName || '不明'}）`).join('\n');
+    return lines ? `${rangeLabel}${wantsDone ? '完了済み' : '未完了'}ToDoは ${todos.length}件あります。\n${lines}` : `${rangeLabel}${wantsDone ? '完了済み' : '未完了'}ToDoはありません。`;
+  }
+
+  if (/記念日|誕生日/.test(q)) {
+    const anniversaries = (s.anniversaries || []).sort((a:any, b:any) => String(a.date || '').localeCompare(String(b.date || '')));
+    const lines = anniversaries.map((a:any)=>`・${a.date} ${a.title}${a.repeat === 'yearly' ? '（毎年）' : ''}`).join('\n');
+    return lines || '登録済みの記念日はありません。';
+  }
+
+  if (/メモ|共有/.test(q)) {
+    const lines = (s.sharedNotes || []).map((n:any)=>`・${n.title}: ${n.content}`).join('\n');
+    return lines || '共有メモはありません。';
+  }
+
+  return null;
+}
 
 async function searchRagMemory(body: Body) {
   if (!body.groupId || !process.env.OPENAI_API_KEY) return { results: [] as any[], unavailable: true };
@@ -79,6 +155,8 @@ async function searchRagMemory(body: Body) {
 }
 
 function fallbackAnswer(body: Body) {
+  const exact = deterministicAnswer(body);
+  if (exact) return exact;
   const q = body.question || '';
   const s = scoped(body);
   const rangeLabel = s.range?.label ? `${s.range.label}の` : '';
@@ -121,6 +199,8 @@ export async function POST(req: Request) {
   }
   const body = { ...rawBody, currentUserId: auth.uid, groupId: auth.groupId };
   const filtered = scoped(body);
+  const exactAnswer = deterministicAnswer(body);
+  if (exactAnswer) return Response.json({ answer: exactAnswer, deterministic: true });
   if (!process.env.OPENAI_API_KEY) return Response.json({ answer: fallbackAnswer(body), fallback: true });
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const rag = await searchRagMemory(body);
