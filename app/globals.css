@@ -278,6 +278,20 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .btn.full { width: 100%; }
 .danger-text { color: var(--danger) !important; }
 .link { border: 0; background: transparent; color: var(--danger); font-weight: 900; padding: 8px 0; }
+.edit-link { color: var(--brand); }
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.mini-link {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--brand);
+  font-weight: 900;
+  padding: 2px 0 2px 8px;
+}
 
 .input, .select, .textarea {
   width: 100%;

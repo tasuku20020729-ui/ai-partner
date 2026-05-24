@@ -13,6 +13,7 @@ import type { Anniversary, Currency, Diary, EventItem, Expense, ExpenseCategory,
 type Tab = 'home' | 'diary' | 'calendar' | 'todo' | 'expense' | 'ai' | 'notes' | 'settings';
 type AddMode = 'diary' | 'event' | 'todo' | 'expense' | 'anniversary' | 'note' | null;
 type ChatMessage = { role: 'user' | 'ai'; content: string };
+type EditTarget = { mode: Exclude<AddMode, null>; id: string; data: Record<string, any> } | null;
 
 const categories: { value: ExpenseCategory; label: string }[] = [
   { value: 'food', label: '食費' }, { value: 'daily_goods', label: '日用品' }, { value: 'dating', label: '交際費' }, { value: 'transport', label: '交通費' }, { value: 'travel', label: '旅行' }, { value: 'medical', label: '医療費' }, { value: 'entertainment', label: '娯楽' }, { value: 'other', label: 'その他' }
@@ -43,6 +44,13 @@ const addMonths = (isoDate: string, months: number) => {
 };
 const dateFromMonthDay = (monthIso: string, day: number) => `${monthIso.slice(0, 7)}-${String(day).padStart(2, '0')}`;
 const dateTimeOnDate = (date: string, time = '09:00') => `${date}T${time}`;
+const toDateTimeLocal = (value?: string) => {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value.slice(0, 16);
+  return toDateTimeLocalValue(d);
+};
+const locationNameFrom = (item: any) => typeof item.location === 'string' ? item.location : item.location?.name || '';
 
 function toRagItem(type: AddMode | string, id: string, item: Record<string, any>) {
   if (!type || type === 'note') {
@@ -115,6 +123,7 @@ export default function Page() {
   const [selectedDate, setSelectedDate] = useState(todayIso());
   const [calendarMonth, setCalendarMonth] = useState(todayIso());
   const [datePickerOpen, setDatePickerOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<EditTarget>(null);
 
   useEffect(() => onAuthStateChanged(auth, async (u) => {
     setUser(u);
@@ -189,6 +198,15 @@ export default function Page() {
     setSelectedDate(date);
     setCalendarMonth(date);
     setDatePickerOpen(false);
+    setEditTarget(null);
+    setAddMode(mode);
+  };
+  const openEdit = (mode: Exclude<AddMode, null>, item: Record<string, any>) => {
+    const date = item.date || datePart(item.startAt) || item.dueAt || selectedDate;
+    setSelectedDate(date);
+    setCalendarMonth(date);
+    setDatePickerOpen(false);
+    setEditTarget({ mode, id: item.id, data: item });
     setAddMode(mode);
   };
   const chooseDate = (date: string) => {
@@ -203,18 +221,18 @@ export default function Page() {
   return <div className="shell">
     <header className="top"><div className="brand"><div><h1>AI Life Diary v5</h1><p>カレンダー・ToDo・日記・支出</p></div><div className="avatar">{(user.displayName || user.email || 'U').slice(0, 1).toUpperCase()}</div></div></header>
     <main className="content">
-      {tab === 'home' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} chooseDate={chooseDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} naturalAdd={naturalAdd} setTab={setTab} />}
-      {tab === 'diary' && <DiaryView diaries={diaries} currentUserId={user.uid} onDelete={remove} />}
-      {tab === 'calendar' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} chooseDate={chooseDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} naturalAdd={naturalAdd} setTab={setTab} />}
-      {tab === 'todo' && <TodoView todos={todos} currentUserId={user.uid} toggleTodo={toggleTodo} onDelete={remove} />}
-      {tab === 'expense' && <ExpenseView expenses={expenses} setAddMode={setAddMode} />}
+      {tab === 'home' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} chooseDate={chooseDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} onEdit={openEdit} currentUserId={user.uid} naturalAdd={naturalAdd} setTab={setTab} />}
+      {tab === 'diary' && <DiaryView diaries={diaries} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} />}
+      {tab === 'calendar' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} chooseDate={chooseDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} onEdit={openEdit} currentUserId={user.uid} naturalAdd={naturalAdd} setTab={setTab} />}
+      {tab === 'todo' && <TodoView todos={todos} currentUserId={user.uid} toggleTodo={toggleTodo} onEdit={openEdit} onDelete={remove} />}
+      {tab === 'expense' && <ExpenseView expenses={expenses} currentUserId={user.uid} onEdit={openEdit} setAddMode={setAddMode} />}
       {tab === 'ai' && <AIView chat={chat} question={question} setQuestion={setQuestion} ask={askAI} saving={saving} />}
-      {tab === 'notes' && <NotesView notes={sharedNotes} currentUserId={user.uid} onDelete={remove} setAddMode={setAddMode} />}
+      {tab === 'notes' && <NotesView notes={sharedNotes} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} setAddMode={setAddMode} />}
       {tab === 'settings' && <SettingsView user={user} groupId={groupId} setGroupId={saveGroupId} partnerName={partnerName} setPartnerName={savePartnerName} reload={() => loadAll()} notificationEnabled={notificationEnabled} setNotificationEnabled={enableNotifications} pushStatus={pushStatus} enablePush={enablePushNotifications} repairSearchIndex={repairSearchIndex} saving={saving} />}
     </main>
     <BottomNav tab={tab} setTab={setTab} />
     {datePickerOpen && <DateActionSheet selectedDate={selectedDate} close={() => setDatePickerOpen(false)} openAdd={openAddForDate} />}
-    {addMode && <AddModal mode={addMode} setMode={setAddMode} save={saveDoc} user={user} groupId={groupId} partnerName={partnerName} selectedDate={selectedDate} />}
+    {addMode && <AddModal mode={addMode} setMode={setAddMode} close={() => { setEditTarget(null); setAddMode(null); }} save={saveDoc} user={user} groupId={groupId} partnerName={partnerName} selectedDate={selectedDate} editTarget={editTarget} />}
   </div>;
 
   async function remove(type: string, id: string) {
@@ -271,26 +289,31 @@ export default function Page() {
     if (!type || !user) return;
     setSaving(true);
     try {
-      const base = { userId: user.uid, ownerName: user.displayName || user.email || '自分', groupId, visibility: data.visibility || 'private', aiReadable: data.aiReadable ?? true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      const now = new Date().toISOString();
+      const target = editTarget?.mode === type ? editTarget : null;
+      const existing = target?.data || {};
+      const base = { userId: user.uid, ownerName: user.displayName || user.email || '自分', groupId, visibility: data.visibility || existing.visibility || 'private', aiReadable: data.aiReadable ?? existing.aiReadable ?? true, createdAt: existing.createdAt || now, updatedAt: now };
       let savedId = '';
       let savedPayload: Record<string, any> = {};
       if (type === 'expense') {
         const currency = data.currency as Currency; const amount = Number(data.amount); const rate = ratesToJpy[currency] || 1;
-        savedPayload = { ...base, ...data, amount, exchangeRate: rate, amountBase: amount * rate, baseCurrency: 'JPY', inputType: data.inputType || 'manual' };
-        const refDoc = await addDoc(collection(db, 'expenses'), savedPayload);
-        savedId = refDoc.id;
+        savedPayload = { ...existing, ...base, ...data, amount, exchangeRate: rate, amountBase: amount * rate, baseCurrency: 'JPY', inputType: data.inputType || existing.inputType || 'manual' };
+        if (target) { savedId = target.id; await updateDoc(doc(db, 'expenses', savedId), savedPayload); }
+        else { const refDoc = await addDoc(collection(db, 'expenses'), savedPayload); savedId = refDoc.id; }
       } else if (type === 'note') {
-        savedPayload = { groupId, title: data.title, content: data.content, createdBy: user.uid, createdByName: user.displayName || user.email || '自分', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-        const refDoc = await addDoc(collection(db, 'sharedNotes'), savedPayload);
-        savedId = refDoc.id;
+        savedPayload = { ...existing, groupId, title: data.title, content: data.content, createdBy: user.uid, createdByName: user.displayName || user.email || '自分', createdAt: existing.createdAt || now, updatedAt: now };
+        if (target) { savedId = target.id; await updateDoc(doc(db, 'sharedNotes', savedId), savedPayload); }
+        else { const refDoc = await addDoc(collection(db, 'sharedNotes'), savedPayload); savedId = refDoc.id; }
       } else {
         const map: Record<string, string> = { diary: 'diaries', event: 'events', todo: 'todos', anniversary: 'anniversaries' };
-        savedPayload = { ...base, ...data };
-        const refDoc = await addDoc(collection(db, map[type]), savedPayload);
-        savedId = refDoc.id;
+        savedPayload = { ...existing, ...base, ...data };
+        if (target) { savedId = target.id; await updateDoc(doc(db, map[type], savedId), savedPayload); }
+        else { const refDoc = await addDoc(collection(db, map[type]), savedPayload); savedId = refDoc.id; }
       }
-      fetch('/api/rag/sync', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify(toRagItem(type, savedId, savedPayload)) }).catch(() => undefined);
-      setAddMode(null); await loadAll();
+      const ragPayload = toRagItem(type, savedId, savedPayload);
+      const shouldSync = type === 'note' || savedPayload.aiReadable !== false;
+      fetch(shouldSync ? '/api/rag/sync' : '/api/rag/delete', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify(shouldSync ? ragPayload : { type: type === 'note' ? 'sharedNote' : type, id: savedId }) }).catch(() => undefined);
+      setEditTarget(null); setAddMode(null); await loadAll();
     } catch (e) { alert(e instanceof Error ? e.message : '保存に失敗しました'); }
     finally { setSaving(false); }
   }
@@ -358,7 +381,7 @@ function Login(p: { name: string; setName: (v: string) => void; email: string; s
   return <div className="shell"><main className="content" style={{ paddingTop: 64 }}><div className="card"><h1>AI Life Diary v5</h1><p className="muted">Firebaseログインで開始します。日記・予定・ToDo・支出をAIで横断検索できます。</p><input className="input" placeholder="名前（新規登録時）" value={p.name} onChange={e => p.setName(e.target.value)} /><input className="input" placeholder="メール" value={p.email} onChange={e => p.setEmail(e.target.value)} /><input className="input" type="password" placeholder="パスワード" value={p.password} onChange={e => p.setPassword(e.target.value)} /><div className="grid"><button className="btn" disabled={p.saving} onClick={() => p.login(false)}>ログイン</button><button className="btn secondary" disabled={p.saving} onClick={() => p.login(true)}>新規登録</button></div></div></main></div>;
 }
 
-function CalendarHomeView({ selectedDate, setSelectedDate, chooseDate, calendarMonth, setCalendarMonth, diaries, events, todos, expenses, anniversaries, monthExpense, openAdd, naturalAdd, setTab }: any) {
+function CalendarHomeView({ selectedDate, setSelectedDate, chooseDate, calendarMonth, setCalendarMonth, diaries, events, todos, expenses, anniversaries, monthExpense, openAdd, onEdit, currentUserId, naturalAdd, setTab }: any) {
   const [naturalText, setNaturalText] = useState('');
   const [year, month] = calendarMonth.slice(0, 7).split('-').map(Number);
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
@@ -393,11 +416,12 @@ function CalendarHomeView({ selectedDate, setSelectedDate, chooseDate, calendarM
       <div className="row"><div><p className="eyebrow">選択中</p><h3>{new Date(`${selectedDate}T00:00:00+09:00`).toLocaleDateString('ja-JP', { dateStyle: 'full' })}</h3></div><div className="day-total">{yen(selectedTotal)}</div></div>
       <div className="quick date-actions"><button onClick={() => openAdd('diary', selectedDate)}><NotebookPen size={16} />日記</button><button onClick={() => openAdd('todo', selectedDate)}><CheckSquare size={16} />ToDo</button><button onClick={() => openAdd('event', selectedDate)}><CalendarDays size={16} />予定</button><button onClick={() => openAdd('expense', selectedDate)}><ReceiptText size={16} />支出</button></div>
       <div className="day-list">
-        {selectedEvents.map((e: EventItem) => <p key={e.id}><CalendarDays size={14} />{new Date(e.startAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })} {e.title}</p>)}
-        {selectedTodos.map((t: Todo) => <p key={t.id}><CheckSquare size={14} />{t.title}{t.status === 'done' ? '（完了）' : ''}</p>)}
-        {selectedDiaries.map((d: Diary) => <p key={d.id}><NotebookPen size={14} />{d.title}</p>)}
-        {selectedAnniversaries.map((a: Anniversary) => <p key={a.id}><Gift size={14} />{a.title}</p>)}
-        {!selectedEvents.length && !selectedTodos.length && !selectedDiaries.length && !selectedAnniversaries.length && <p className="muted">この日の予定・ToDo・日記はまだありません。</p>}
+        {selectedEvents.map((e: EventItem) => <p key={e.id}><CalendarDays size={14} />{new Date(e.startAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })} {e.title}{e.userId === currentUserId && <button className="mini-link" onClick={() => onEdit('event', e)}>編集</button>}</p>)}
+        {selectedTodos.map((t: Todo) => <p key={t.id}><CheckSquare size={14} />{t.title}{t.status === 'done' ? '（完了）' : ''}{t.userId === currentUserId && <button className="mini-link" onClick={() => onEdit('todo', t)}>編集</button>}</p>)}
+        {selectedDiaries.map((d: Diary) => <p key={d.id}><NotebookPen size={14} />{d.title}{d.userId === currentUserId && <button className="mini-link" onClick={() => onEdit('diary', d)}>編集</button>}</p>)}
+        {selectedExpenses.map((e: Expense) => <p key={e.id}><ReceiptText size={14} />{e.title} {yen(Number(e.amountBase || 0))}{e.userId === currentUserId && <button className="mini-link" onClick={() => onEdit('expense', e)}>編集</button>}</p>)}
+        {selectedAnniversaries.map((a: Anniversary) => <p key={a.id}><Gift size={14} />{a.title}{a.userId === currentUserId && <button className="mini-link" onClick={() => onEdit('anniversary', a)}>編集</button>}</p>)}
+        {!selectedEvents.length && !selectedTodos.length && !selectedDiaries.length && !selectedExpenses.length && !selectedAnniversaries.length && <p className="muted">この日の予定・ToDo・日記はまだありません。</p>}
       </div>
     </section>
     <section className="card natural-card"><h3>自然文で追加</h3><div className="compose"><input className="input" placeholder="例: 明日19時に歯医者 / 今週中に課題提出 / 昨日ランチで1200円" value={naturalText} onChange={e => setNaturalText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && naturalText.trim()) { naturalAdd(naturalText); setNaturalText(''); } }} /><button className="btn" disabled={!naturalText.trim()} onClick={() => { naturalAdd(naturalText); setNaturalText(''); }}>追加</button></div></section>
@@ -412,11 +436,11 @@ function DateActionSheet({ selectedDate, close, openAdd }: { selectedDate: strin
 function HomeView({ setAddMode, todayEvents, openTodos, monthExpense, setTab, memoryCards, reminderCards }: any) {
   return <><section className="hero"><p>今日のまとめ</p><h2>{new Date().toLocaleDateString('ja-JP', { dateStyle: 'full' })}</h2><div className="quick"><button onClick={() => setAddMode('diary')}>日記</button><button onClick={() => setAddMode('event')}>予定</button><button onClick={() => setAddMode('todo')}>ToDo</button><button onClick={() => setAddMode('expense')}>支出</button></div></section><div className="grid"><div className="card"><h3>今日の予定</h3>{todayEvents.length ? todayEvents.map((e: EventItem) => <p key={e.id}>・{new Date(e.startAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })} {e.title}</p>) : <p className="muted">予定なし</p>}</div><div className="card"><h3>未完了ToDo</h3>{openTodos.slice(0, 5).map((t: Todo) => <p key={t.id}>・{t.title}</p>)}{!openTodos.length && <p className="muted">未完了なし</p>}</div></div><div className="card" onClick={() => setTab('expense')}><h3>今月の支出</h3><div className="big">{yen(monthExpense)}</div><p className="muted">固定レート換算。為替自動取得は除外済み。</p></div><div className="card"><h3>通知センター</h3>{reminderCards.length ? reminderCards.map((m: string, i: number) => <p key={i}>・{m}</p>) : <p className="muted">直近のリマインドはありません。</p>}</div><div className="card"><h3>振り返りカード</h3>{memoryCards.length ? memoryCards.map((m: string, i: number) => <p key={i}>・{m}</p>) : <p className="muted">日記や支出を登録すると表示されます。</p>}</div></>;
 }
-function DiaryView({ diaries, currentUserId, onDelete }: any) { return <Section title="日記">{diaries.map((d: Diary) => <article className="card" key={d.id}><div className="row"><b>{d.title}</b><span>{d.visibility}</span></div><p className="muted">{d.date} / {d.ownerName}</p><p>{d.content}</p>{d.location?.name && <p className="muted">場所: {d.location.name}</p>}{d.photos?.map(url => <img key={url} className="photo" src={url} alt="diary" />)}{d.userId === currentUserId && <button className="link" onClick={() => onDelete('diary', d.id)}>削除</button>}</article>)}</Section>; }
+function DiaryView({ diaries, currentUserId, onEdit, onDelete }: any) { return <Section title="日記">{diaries.map((d: Diary) => <article className="card" key={d.id}><div className="row"><b>{d.title}</b><span>{d.visibility}</span></div><p className="muted">{d.date} / {d.ownerName}</p><p>{d.content}</p>{d.location?.name && <p className="muted">場所: {d.location.name}</p>}{d.photos?.map(url => <img key={url} className="photo" src={url} alt="diary" />)}{d.userId === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('diary', d)}>編集</button><button className="link" onClick={() => onDelete('diary', d.id)}>削除</button></div>}</article>)}</Section>; }
 function CalendarView({ events, anniversaries, currentUserId, onDelete, setAddMode }: any) { return <Section title="予定・記念日"><div className="grid"><button className="btn" onClick={() => setAddMode('event')}>予定追加</button><button className="btn secondary" onClick={() => setAddMode('anniversary')}>記念日追加</button></div>{events.map((e: EventItem) => <article className="card" key={e.id}><div className="row"><b>{e.title}</b><span>{e.ownerName}</span></div><p className="muted">{new Date(e.startAt).toLocaleString('ja-JP')} {e.location}</p><p>{e.description}</p>{e.remindAt && <p className="muted">リマインド: {new Date(e.remindAt).toLocaleString('ja-JP')}</p>}{e.userId === currentUserId && <button className="link" onClick={() => onDelete('event', e.id)}>削除</button>}</article>)}{anniversaries.map((a: Anniversary) => <article className="card accent" key={a.id}><b>🎁 {a.title}</b><p className="muted">{a.date} / {a.repeat === 'yearly' ? '毎年' : '一回'}</p>{a.userId === currentUserId && <button className="link" onClick={() => onDelete('anniversary', a.id)}>削除</button>}</article>)}</Section>; }
-function TodoView({ todos, currentUserId, toggleTodo, onDelete }: any) { return <Section title="ToDo">{todos.map((t: Todo) => <article className="card" key={t.id}><label className="row"><span><input type="checkbox" checked={t.status === 'done'} disabled={t.userId !== currentUserId} onChange={() => toggleTodo(t)} /> <b className={t.status === 'done' ? 'done' : ''}>{t.title}</b></span><span>{t.priority}</span></label><p className="muted">期限: {t.dueAt || '-'} / {t.ownerName}</p>{t.remindAt && <p className="muted">リマインド: {new Date(t.remindAt).toLocaleString('ja-JP')}</p>}<p>{t.description}</p>{t.userId === currentUserId && <button className="link" onClick={() => onDelete('todo', t.id)}>削除</button>}</article>)}</Section>; }
-function ExpenseView({ expenses, setAddMode }: any) { const total = expenses.reduce((s: number, e: Expense) => s + Number(e.amountBase || 0), 0); return <Section title="支出"><button className="btn" onClick={() => setAddMode('expense')}>支出を追加</button><div className="card"><h3>合計</h3><div className="big">{yen(total)}</div></div>{expenses.map((e: Expense) => <article className="card" key={e.id}><div className="row"><b>{e.title}</b><span>{e.amount.toLocaleString()} {e.currency}</span></div><p className="muted">{e.date} / {categoryLabel[e.category]} / {e.ownerName}</p><p>{e.memo}</p>{e.receiptImageUrl && <img className="photo" src={e.receiptImageUrl} alt="receipt" />}</article>)}</Section>; }
-function NotesView({ notes, currentUserId, onDelete, setAddMode }: any) { return <Section title="共有メモ"><button className="btn" onClick={() => setAddMode('note')}>共有メモ追加</button>{notes.map((n: SharedNote) => <article className="card" key={n.id}><b>{n.title}</b><p className="muted">{n.createdByName}</p><p>{n.content}</p>{n.createdBy === currentUserId && <button className="link" onClick={() => onDelete('note', n.id)}>削除</button>}</article>)}</Section>; }
+function TodoView({ todos, currentUserId, toggleTodo, onEdit, onDelete }: any) { return <Section title="ToDo">{todos.map((t: Todo) => <article className="card" key={t.id}><label className="row"><span><input type="checkbox" checked={t.status === 'done'} disabled={t.userId !== currentUserId} onChange={() => toggleTodo(t)} /> <b className={t.status === 'done' ? 'done' : ''}>{t.title}</b></span><span>{t.priority}</span></label><p className="muted">期限: {t.dueAt || '-'} / {t.ownerName}</p>{t.remindAt && <p className="muted">リマインド: {new Date(t.remindAt).toLocaleString('ja-JP')}</p>}<p>{t.description}</p>{t.userId === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('todo', t)}>編集</button><button className="link" onClick={() => onDelete('todo', t.id)}>削除</button></div>}</article>)}</Section>; }
+function ExpenseView({ expenses, currentUserId, onEdit, setAddMode }: any) { const total = expenses.reduce((s: number, e: Expense) => s + Number(e.amountBase || 0), 0); return <Section title="支出"><button className="btn" onClick={() => setAddMode('expense')}>支出を追加</button><div className="card"><h3>合計</h3><div className="big">{yen(total)}</div></div>{expenses.map((e: Expense) => <article className="card" key={e.id}><div className="row"><b>{e.title}</b><span>{e.amount.toLocaleString()} {e.currency}</span></div><p className="muted">{e.date} / {categoryLabel[e.category]} / {e.ownerName}</p><p>{e.memo}</p>{e.receiptImageUrl && <img className="photo" src={e.receiptImageUrl} alt="receipt" />}{e.userId === currentUserId && <button className="link edit-link" onClick={() => onEdit('expense', e)}>編集</button>}</article>)}</Section>; }
+function NotesView({ notes, currentUserId, onEdit, onDelete, setAddMode }: any) { return <Section title="共有メモ"><button className="btn" onClick={() => setAddMode('note')}>共有メモ追加</button>{notes.map((n: SharedNote) => <article className="card" key={n.id}><b>{n.title}</b><p className="muted">{n.createdByName}</p><p>{n.content}</p>{n.createdBy === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('note', n)}>編集</button><button className="link" onClick={() => onDelete('note', n.id)}>削除</button></div>}</article>)}</Section>; }
 function AIView({ chat, question, setQuestion, ask, saving }: any) { return <Section title="AIチャット"><div className="chat">{chat.map((m: ChatMessage, i: number) => <div key={i} className={`bubble ${m.role}`}>{m.content}</div>)}</div><div className="compose"><input className="input" placeholder="例: 彼女の明後日の予定は？" value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => e.key === 'Enter' && ask()} /><button className="btn" disabled={saving} onClick={ask}>質問</button></div></Section>; }
 function SettingsView({ user, groupId, setGroupId, partnerName, setPartnerName, reload, notificationEnabled, setNotificationEnabled, pushStatus, enablePush, repairSearchIndex, saving }: any) {
   const generateCode = () => `couple_${Math.random().toString(36).slice(2, 8)}_${user.uid.slice(0, 4)}`;
@@ -425,19 +449,31 @@ function SettingsView({ user, groupId, setGroupId, partnerName, setPartnerName, 
 function Section({ title, children }: any) { return <><h2 className="title">{title}</h2>{children}</>; }
 function BottomNav({ tab, setTab }: any) { const items = [['home', Home, 'ホーム'], ['ai', MessageCircle, 'AI'], ['notes', StickyNote, 'メモ'], ['settings', Settings, '設定']] as const; return <nav className="bottom compact">{items.map(([key, Icon, label]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}><Icon size={18} /><span>{label}</span></button>)}</nav>; }
 
-function AddModal({ mode, setMode, save, user, partnerName, selectedDate }: { mode: AddMode; setMode: (m: AddMode) => void; save: (m: AddMode, d: any) => void; user: User; groupId: string; partnerName: string; selectedDate: string }) {
-  const [form, setForm] = useState<Record<string, any>>({ date: selectedDate, startAt: dateTimeOnDate(selectedDate), dueAt: selectedDate, priority: 'middle', status: 'open', currency: 'JPY', category: 'food', visibility: 'private', aiReadable: true, repeat: 'yearly' });
+function initialFormFor(mode: AddMode, selectedDate: string, item?: Record<string, any>) {
+  const base = { date: selectedDate, startAt: dateTimeOnDate(selectedDate), dueAt: selectedDate, priority: 'middle', status: 'open', currency: 'JPY', category: 'food', visibility: 'private', aiReadable: true, repeat: 'yearly' };
+  if (!item) return base;
+  if (mode === 'diary') return { ...base, ...item, locationName: item.location?.name || '', lat: item.location?.lat, lng: item.location?.lng, mood: item.mood || item.tags?.[0] || '' };
+  if (mode === 'event') return { ...base, ...item, startAt: toDateTimeLocal(item.startAt), endAt: toDateTimeLocal(item.endAt), remindAt: toDateTimeLocal(item.remindAt), location: locationNameFrom(item) };
+  if (mode === 'todo') return { ...base, ...item, remindAt: toDateTimeLocal(item.remindAt) };
+  if (mode === 'expense') return { ...base, ...item };
+  if (mode === 'anniversary') return { ...base, ...item };
+  if (mode === 'note') return { ...base, ...item };
+  return { ...base, ...item };
+}
+
+function AddModal({ mode, setMode, close, save, user, partnerName, selectedDate, editTarget }: { mode: AddMode; setMode: (m: AddMode) => void; close: () => void; save: (m: AddMode, d: any) => void; user: User; groupId: string; partnerName: string; selectedDate: string; editTarget: EditTarget }) {
+  const [form, setForm] = useState<Record<string, any>>(() => initialFormFor(mode, selectedDate, editTarget?.data));
   const [receiptBusy, setReceiptBusy] = useState(false); const [aiText, setAiText] = useState('');
   const set = (k: string, v: any) => setForm(f => ({ ...f, [k]: v }));
   async function uploadImage(file: File, folder: string) { const path = `${folder}/${user.uid}/${Date.now()}_${file.name}`; const storageRef = ref(storage, path); await uploadBytes(storageRef, file); return getDownloadURL(storageRef); }
-  return <div className="modal"><div className="panel"><div className="tabs"><button className={mode === 'diary' ? 'active' : ''} onClick={() => setMode('diary')}>日記</button><button className={mode === 'event' ? 'active' : ''} onClick={() => setMode('event')}>予定</button><button className={mode === 'todo' ? 'active' : ''} onClick={() => setMode('todo')}>ToDo</button><button className={mode === 'expense' ? 'active' : ''} onClick={() => setMode('expense')}>支出</button><button className={mode === 'anniversary' ? 'active' : ''} onClick={() => setMode('anniversary')}>記念日</button><button className={mode === 'note' ? 'active' : ''} onClick={() => setMode('note')}>メモ</button></div><h2 className="title">追加</h2>
-    {mode === 'diary' && <><input className="input" placeholder="タイトル" onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.date} onChange={e => set('date', e.target.value)} /><textarea className="textarea" placeholder="内容" onChange={e => set('content', e.target.value)} /><input className="input" placeholder="気分・タグ" onChange={e => set('mood', e.target.value)} /><input className="input" placeholder="場所名" onChange={e => set('locationName', e.target.value)} /><button className="btn secondary" onClick={() => navigator.geolocation?.getCurrentPosition(pos => setForm(f => ({ ...f, lat: pos.coords.latitude, lng: pos.coords.longitude })))}>現在地をセット</button><label>写真</label><input className="input" type="file" accept="image/*" multiple onChange={async e => { const files = Array.from(e.target.files || []) as File[]; const urls: string[] = []; for (const file of files) urls.push(await uploadImage(file, 'diaries')); set('photos', urls); }} /></>}
-    {mode === 'event' && <><input className="input" placeholder="予定名" onChange={e => set('title', e.target.value)} /><input className="input" type="datetime-local" value={form.startAt} onChange={e => set('startAt', e.target.value)} /><input className="input" type="datetime-local" onChange={e => set('endAt', e.target.value)} /><input className="input" placeholder="場所" onChange={e => set('location', e.target.value)} /><textarea className="textarea" placeholder="説明" onChange={e => set('description', e.target.value)} /><label><input type="checkbox" checked={!!form.reminderEnabled} onChange={e => set('reminderEnabled', e.target.checked)} /> リマインド</label><input className="input" type="datetime-local" onChange={e => set('remindAt', e.target.value)} /></>}
-    {mode === 'todo' && <><input className="input" placeholder="ToDo" onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.dueAt || selectedDate} onChange={e => set('dueAt', e.target.value)} /><select className="select" value={form.priority} onChange={e => set('priority', e.target.value)}><option value="low">低</option><option value="middle">中</option><option value="high">高</option></select><textarea className="textarea" placeholder="説明" onChange={e => set('description', e.target.value)} /><label><input type="checkbox" checked={!!form.reminderEnabled} onChange={e => set('reminderEnabled', e.target.checked)} /> リマインド</label><input className="input" type="datetime-local" onChange={e => set('remindAt', e.target.value)} /></>}
+  return <div className="modal"><div className="panel">{!editTarget && <div className="tabs"><button className={mode === 'diary' ? 'active' : ''} onClick={() => setMode('diary')}>日記</button><button className={mode === 'event' ? 'active' : ''} onClick={() => setMode('event')}>予定</button><button className={mode === 'todo' ? 'active' : ''} onClick={() => setMode('todo')}>ToDo</button><button className={mode === 'expense' ? 'active' : ''} onClick={() => setMode('expense')}>支出</button><button className={mode === 'anniversary' ? 'active' : ''} onClick={() => setMode('anniversary')}>記念日</button><button className={mode === 'note' ? 'active' : ''} onClick={() => setMode('note')}>メモ</button></div>}<h2 className="title">{editTarget ? '編集' : '追加'}</h2>
+    {mode === 'diary' && <><input className="input" placeholder="タイトル" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.date} onChange={e => set('date', e.target.value)} /><textarea className="textarea" placeholder="内容" value={form.content || ''} onChange={e => set('content', e.target.value)} /><input className="input" placeholder="気分・タグ" value={form.mood || ''} onChange={e => set('mood', e.target.value)} /><input className="input" placeholder="場所名" value={form.locationName || ''} onChange={e => set('locationName', e.target.value)} /><button className="btn secondary" onClick={() => navigator.geolocation?.getCurrentPosition(pos => setForm(f => ({ ...f, lat: pos.coords.latitude, lng: pos.coords.longitude })))}>現在地をセット</button><label>写真</label><input className="input" type="file" accept="image/*" multiple onChange={async e => { const files = Array.from(e.target.files || []) as File[]; const urls: string[] = []; for (const file of files) urls.push(await uploadImage(file, 'diaries')); set('photos', urls); }} /></>}
+    {mode === 'event' && <><input className="input" placeholder="予定名" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="datetime-local" value={form.startAt || ''} onChange={e => set('startAt', e.target.value)} /><input className="input" type="datetime-local" value={form.endAt || ''} onChange={e => set('endAt', e.target.value)} /><input className="input" placeholder="場所" value={form.location || ''} onChange={e => set('location', e.target.value)} /><textarea className="textarea" placeholder="説明" value={form.description || ''} onChange={e => set('description', e.target.value)} /><label><input type="checkbox" checked={!!form.reminderEnabled} onChange={e => set('reminderEnabled', e.target.checked)} /> リマインド</label><input className="input" type="datetime-local" value={form.remindAt || ''} onChange={e => set('remindAt', e.target.value)} /></>}
+    {mode === 'todo' && <><input className="input" placeholder="ToDo" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.dueAt || selectedDate} onChange={e => set('dueAt', e.target.value)} /><select className="select" value={form.priority} onChange={e => set('priority', e.target.value)}><option value="low">低</option><option value="middle">中</option><option value="high">高</option></select><textarea className="textarea" placeholder="説明" value={form.description || ''} onChange={e => set('description', e.target.value)} /><label><input type="checkbox" checked={!!form.reminderEnabled} onChange={e => set('reminderEnabled', e.target.checked)} /> リマインド</label><input className="input" type="datetime-local" value={form.remindAt || ''} onChange={e => set('remindAt', e.target.value)} /></>}
     {mode === 'expense' && <><div className="card" style={{ boxShadow: 'none' }}><h3>AI自然文入力</h3><input className="input" placeholder="例: 昨日Grabで35リンギット使った" value={aiText} onChange={e => setAiText(e.target.value)} /><button className="btn secondary" onClick={async () => { const res = await fetch('/api/ai/natural-entry', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify({ text: aiText }) }); const json = await res.json(); setForm(f => ({ ...f, ...json.entry, inputType: 'ai_text' })); }}>AIで入力</button></div><label>レシート写真</label><input className="input" type="file" accept="image/*" onChange={async e => { const file = e.target.files?.[0]; if (!file) return; setReceiptBusy(true); try { const url = await uploadImage(file, 'receipts'); const res = await fetch('/api/ai/receipt', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify({ imageUrl: url }) }); const json = await res.json(); if (!res.ok || !json.expense) throw new Error(json.error || 'レシート解析に失敗しました'); setForm(f => ({ ...f, ...json.expense, receiptImageUrl: url, inputType: 'receipt' })); } catch (err) { alert(err instanceof Error ? err.message : 'レシート解析に失敗しました'); } finally { setReceiptBusy(false); } }} />{receiptBusy && <p className="muted">レシート解析中...</p>}<input className="input" placeholder="タイトル" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.date} onChange={e => set('date', e.target.value)} /><input className="input" type="number" placeholder="金額" value={form.amount || ''} onChange={e => set('amount', e.target.value)} /><select className="select" value={form.currency} onChange={e => set('currency', e.target.value)}><option value="JPY">JPY</option><option value="MYR">MYR</option><option value="USD">USD</option></select><select className="select" value={form.category} onChange={e => set('category', e.target.value)}>{categories.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}</select><input className="input" placeholder="店名" value={form.shopName || ''} onChange={e => set('shopName', e.target.value)} /><textarea className="textarea" placeholder="メモ" value={form.memo || ''} onChange={e => set('memo', e.target.value)} /></>}
-    {mode === 'anniversary' && <><input className="input" placeholder="記念日名" onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.date} onChange={e => set('date', e.target.value)} /><select className="select" value={form.repeat} onChange={e => set('repeat', e.target.value)}><option value="yearly">毎年</option><option value="none">一回だけ</option></select></>}
-    {mode === 'note' && <><input className="input" placeholder="メモタイトル" onChange={e => set('title', e.target.value)} /><textarea className="textarea" placeholder="共有メモ内容" onChange={e => set('content', e.target.value)} /></>}
-    {mode !== 'note' && <><select className="select" value={form.visibility} onChange={e => set('visibility', e.target.value)}><option value="private">自分だけ</option><option value="shared">共有</option></select><label><input type="checkbox" checked={form.aiReadable} onChange={e => set('aiReadable', e.target.checked)} /> AI参照を許可</label></>}<div className="grid" style={{ marginTop: 14 }}><button className="btn secondary" onClick={() => setMode(null)}>閉じる</button><button className="btn" onClick={() => save(mode, normalize(mode, form))}>保存</button></div><p className="muted">共有設定にすると、同じ共有IDの相手がAIで参照できます。相手の呼び名: {partnerName}</p></div></div>;
+    {mode === 'anniversary' && <><input className="input" placeholder="記念日名" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.date} onChange={e => set('date', e.target.value)} /><select className="select" value={form.repeat} onChange={e => set('repeat', e.target.value)}><option value="yearly">毎年</option><option value="none">一回だけ</option></select></>}
+    {mode === 'note' && <><input className="input" placeholder="メモタイトル" value={form.title || ''} onChange={e => set('title', e.target.value)} /><textarea className="textarea" placeholder="共有メモ内容" value={form.content || ''} onChange={e => set('content', e.target.value)} /></>}
+    {mode !== 'note' && <><select className="select" value={form.visibility} onChange={e => set('visibility', e.target.value)}><option value="private">自分だけ</option><option value="shared">共有</option></select><label><input type="checkbox" checked={form.aiReadable} onChange={e => set('aiReadable', e.target.checked)} /> AI参照を許可</label></>}<div className="grid" style={{ marginTop: 14 }}><button className="btn secondary" onClick={close}>閉じる</button><button className="btn" onClick={() => save(mode, normalize(mode, form))}>{editTarget ? '更新' : '保存'}</button></div><p className="muted">共有設定にすると、同じ共有IDの相手がAIで参照できます。相手の呼び名: {partnerName}</p></div></div>;
 }
 function normalize(mode: AddMode, f: Record<string, any>) { if (mode === 'diary') return { ...f, tags: f.mood ? [f.mood] : [], location: { name: f.locationName || '', lat: f.lat, lng: f.lng } }; if (mode === 'event') return { ...f, startAt: new Date(f.startAt).toISOString(), endAt: f.endAt ? new Date(f.endAt).toISOString() : '', remindAt: f.remindAt ? new Date(f.remindAt).toISOString() : '' }; if (mode === 'expense') return { ...f, amount: Number(f.amount || 0), title: f.title || '支出', date: f.date || todayIso(), category: f.category || 'other', currency: f.currency || 'JPY' }; if (mode === 'todo') return { ...f, status: f.status || 'open', priority: f.priority || 'middle', remindAt: f.remindAt ? new Date(f.remindAt).toISOString() : '' }; return f; }
 
