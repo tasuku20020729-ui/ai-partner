@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { auth, db, storage } from '@/lib/firebase';
 import { createUserWithEmailAndPassword, onAuthStateChanged, signInWithEmailAndPassword, signOut, updateProfile, type User } from 'firebase/auth';
-import { addDoc, collection, deleteDoc, doc, getDocs, query, setDoc, updateDoc, where } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, updateDoc, where } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { Bell, CalendarDays, CheckSquare, ChevronLeft, ChevronRight, Gift, Home, MessageCircle, NotebookPen, ReceiptText, Settings, StickyNote, Users, Copy, Share2 } from 'lucide-react';
 import { todayIso, toDateTimeLocalValue } from '@/lib/date';
@@ -126,16 +126,26 @@ export default function Page() {
   const [editTarget, setEditTarget] = useState<EditTarget>(null);
 
   useEffect(() => onAuthStateChanged(auth, async (u) => {
-    setUser(u);
-    if (u) {
-      const gid = localStorage.getItem(`groupId_${u.uid}`) || newGroupId(u.uid);
-      setGroupId(gid);
-      setPartnerName(localStorage.getItem(`partnerName_${u.uid}`) || '彼女');
-      setNotificationEnabled(localStorage.getItem(`notify_${u.uid}`) === 'on');
-      await setDoc(doc(db, 'users', u.uid), { name: u.displayName || u.email || 'User', email: u.email, defaultCurrency: 'JPY', groupId: gid, updatedAt: new Date().toISOString() }, { merge: true });
-      await loadAll(u.uid, gid);
+    try {
+      setUser(u);
+      if (u) {
+        const userRef = doc(db, 'users', u.uid);
+        const userSnap = await getDoc(userRef);
+        const savedGroupId = userSnap.data()?.groupId;
+        const cachedGroupId = localStorage.getItem(`groupId_${u.uid}`);
+        const gid = savedGroupId || cachedGroupId || newGroupId(u.uid);
+        setGroupId(gid);
+        localStorage.setItem(`groupId_${u.uid}`, gid);
+        setPartnerName(localStorage.getItem(`partnerName_${u.uid}`) || '彼女');
+        setNotificationEnabled(localStorage.getItem(`notify_${u.uid}`) === 'on');
+        await setDoc(userRef, { name: u.displayName || u.email || 'User', email: u.email, defaultCurrency: 'JPY', groupId: gid, updatedAt: new Date().toISOString() }, { merge: true });
+        await loadAll(u.uid, gid);
+      }
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'ログイン情報の読み込みに失敗しました');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }), []);
 
   useEffect(() => {
@@ -248,10 +258,23 @@ export default function Page() {
     }
   }
   async function toggleTodo(todo: Todo) { await updateDoc(doc(db, 'todos', todo.id), { status: todo.status === 'done' ? 'open' : 'done', updatedAt: new Date().toISOString() }); await loadAll(); }
-  function saveGroupId(v: string) {
-    setGroupId(v);
-    localStorage.setItem(`groupId_${user!.uid}`, v);
-    setDoc(doc(db, 'users', user!.uid), { groupId: v, updatedAt: new Date().toISOString() }, { merge: true }).catch(e => alert(e instanceof Error ? e.message : '共有IDの保存に失敗しました'));
+  async function saveGroupId(v: string) {
+    if (!user) return;
+    const nextGroupId = v.trim();
+    if (!nextGroupId) {
+      alert('共有IDを入力してください');
+      return;
+    }
+    const previousGroupId = groupId;
+    setGroupId(nextGroupId);
+    try {
+      await setDoc(doc(db, 'users', user.uid), { groupId: nextGroupId, updatedAt: new Date().toISOString() }, { merge: true });
+      localStorage.setItem(`groupId_${user.uid}`, nextGroupId);
+      await loadAll(user.uid, nextGroupId);
+    } catch (e) {
+      setGroupId(previousGroupId);
+      alert(e instanceof Error ? e.message : '共有IDの保存に失敗しました');
+    }
   }
   function savePartnerName(v: string) { setPartnerName(v); localStorage.setItem(`partnerName_${user!.uid}`, v); }
 
@@ -449,9 +472,11 @@ function ExpenseView({ expenses, currentUserId, onEdit, onDelete, setAddMode }: 
 function NotesView({ notes, currentUserId, onEdit, onDelete, setAddMode }: any) { return <Section title="共有メモ"><button className="btn" onClick={() => setAddMode('note')}>共有メモ追加</button>{notes.map((n: SharedNote) => <article className="card" key={n.id}><b>{n.title}</b><p className="muted">{n.createdByName}</p><p>{n.content}</p>{n.createdBy === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('note', n)}>編集</button><button className="link" onClick={() => onDelete('note', n.id)}>削除</button></div>}</article>)}</Section>; }
 function AIView({ chat, question, setQuestion, ask, saving }: any) { return <Section title="AIチャット"><div className="chat">{chat.map((m: ChatMessage, i: number) => <div key={i} className={`bubble ${m.role}`}>{m.content}</div>)}</div><div className="compose"><input className="input" placeholder="例: 彼女の明後日の予定は？" value={question} onChange={e => setQuestion(e.target.value)} onKeyDown={e => e.key === 'Enter' && ask()} /><button className="btn" disabled={saving} onClick={ask}>質問</button></div></Section>; }
 function SettingsView({ user, groupId, setGroupId, partnerName, setPartnerName, reload, notificationEnabled, setNotificationEnabled, pushStatus, enablePush, repairSearchIndex, saving }: any) {
+  const [groupDraft, setGroupDraft] = useState(groupId);
+  useEffect(() => setGroupDraft(groupId), [groupId]);
   const generateCode = () => `couple_${Math.random().toString(36).slice(2, 8)}_${user.uid.slice(0, 4)}`;
-  const copyCode = async () => { await navigator.clipboard?.writeText(groupId); alert('共有IDをコピーしました'); };
-  return <Section title="設定"><div className="card"><h3><Users size={18}/> カップル共有</h3><p className="muted">同じ共有IDを2人で設定すると、sharedにした予定・ToDo・日記・支出・メモを共有できます。</p><input className="input" value={groupId} onChange={e => setGroupId(e.target.value)} /><div className="grid"><button className="btn secondary" onClick={() => setGroupId(generateCode())}><Share2 size={16}/> 招待コードを作成</button><button className="btn secondary" onClick={copyCode}><Copy size={16}/> コピー</button></div><input className="input" value={partnerName} onChange={e => setPartnerName(e.target.value)} placeholder="相手の呼び名（例: 彼女）" /><button className="btn secondary" onClick={reload}>共有データを再読み込み</button><p className="muted">使い方: 片方が招待コードを作成 → コピーして相手に送る → 相手が同じ共有IDに設定。</p></div><div className="card"><h3><Bell size={18}/> 通知</h3><label><input type="checkbox" checked={notificationEnabled} onChange={e => setNotificationEnabled(e.target.checked)} /> アプリ起動中の通知チェックを有効化</label><button className="btn" onClick={enablePush}>PWA Push通知を有効化</button><p className="muted">状態: {pushStatus}</p><p className="muted">iPhoneはSafariで開く → 共有 → ホーム画面に追加 → 追加したアイコンから開いて通知許可、の順に設定してください。</p></div><div className="card"><h3>AI検索</h3><p className="muted">AIの検索結果が古い、または登録した内容が見つからない時だけ修復してください。</p><button className="btn secondary" disabled={saving} onClick={repairSearchIndex}>AI検索を修復</button></div><button className="btn danger" onClick={() => signOut(auth)}>ログアウト</button><p className="muted">ログイン: {user.email}</p></Section>; }
+  const copyCode = async () => { await navigator.clipboard?.writeText(groupDraft.trim() || groupId); alert('共有IDをコピーしました'); };
+  return <Section title="設定"><div className="card"><h3><Users size={18}/> カップル共有</h3><p className="muted">同じ共有IDを2人で設定すると、sharedにした予定・ToDo・日記・支出・メモを共有できます。</p><input className="input" value={groupDraft} onChange={e => setGroupDraft(e.target.value)} /><div className="grid"><button className="btn" onClick={() => setGroupId(groupDraft)}>共有IDを保存</button><button className="btn secondary" onClick={() => { const code = generateCode(); setGroupDraft(code); setGroupId(code); }}><Share2 size={16}/> 招待コードを作成</button><button className="btn secondary" onClick={copyCode}><Copy size={16}/> コピー</button></div><input className="input" value={partnerName} onChange={e => setPartnerName(e.target.value)} placeholder="相手の呼び名（例: 彼女）" /><button className="btn secondary" onClick={reload}>共有データを再読み込み</button><p className="muted">使い方: 片方が招待コードを作成 → コピーして相手に送る → 相手が同じ共有IDに設定。</p></div><div className="card"><h3><Bell size={18}/> 通知</h3><label><input type="checkbox" checked={notificationEnabled} onChange={e => setNotificationEnabled(e.target.checked)} /> アプリ起動中の通知チェックを有効化</label><button className="btn" onClick={enablePush}>PWA Push通知を有効化</button><p className="muted">状態: {pushStatus}</p><p className="muted">iPhoneはSafariで開く → 共有 → ホーム画面に追加 → 追加したアイコンから開いて通知許可、の順に設定してください。</p></div><div className="card"><h3>AI検索</h3><p className="muted">AIの検索結果が古い、または登録した内容が見つからない時だけ修復してください。</p><button className="btn secondary" disabled={saving} onClick={repairSearchIndex}>AI検索を修復</button></div><button className="btn danger" onClick={() => signOut(auth)}>ログアウト</button><p className="muted">ログイン: {user.email}</p></Section>; }
 function Section({ title, children }: any) { return <><h2 className="title">{title}</h2>{children}</>; }
 function BottomNav({ tab, setTab }: any) { const items = [['home', Home, 'ホーム'], ['ai', MessageCircle, 'AI'], ['notes', StickyNote, 'メモ'], ['settings', Settings, '設定']] as const; return <nav className="bottom compact">{items.map(([key, Icon, label]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}><Icon size={18} /><span>{label}</span></button>)}</nav>; }
 
