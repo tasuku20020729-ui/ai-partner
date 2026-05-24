@@ -211,6 +211,8 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .metric-card span { display: block; color: var(--muted); font-size: 12px; font-weight: 800; }
 .metric-card b { display: block; margin-top: 6px; font-size: 22px; }
+.natural-card h3 { margin: 0 0 10px; }
+.natural-card .compose { grid-template-columns: 1fr auto; }
 
 .card, .notice-card {
   background: var(--card);
