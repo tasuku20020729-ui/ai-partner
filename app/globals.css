@@ -57,6 +57,33 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   box-shadow: 0 10px 24px rgba(37, 99, 235, 0.22);
 }
 .content { padding: 16px; }
+.error-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  margin-bottom: 12px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fff1f2;
+  color: #7f1d1d;
+}
+.error-card p {
+  margin: 6px 0 0;
+  color: #991b1b;
+  font-size: 13px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.sync-status {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+  color: var(--muted);
+  font-weight: 800;
+  font-size: 13px;
+}
 
 .hero {
   background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);

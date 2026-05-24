@@ -109,6 +109,8 @@ export default function Page() {
   const [password, setPassword] = useState('');
   const [groupId, setGroupId] = useState('');
   const [partnerName, setPartnerName] = useState('彼女');
+  const [dataLoading, setDataLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const [diaries, setDiaries] = useState<Diary[]>([]);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [todos, setTodos] = useState<Todo[]>([]);
@@ -142,7 +144,7 @@ export default function Page() {
         await loadAll(u.uid, gid);
       }
     } catch (e) {
-      alert(e instanceof Error ? e.message : 'ログイン情報の読み込みに失敗しました');
+      setLoadError(e instanceof Error ? e.message : 'ログイン情報の読み込みに失敗しました');
     } finally {
       setLoading(false);
     }
@@ -157,32 +159,40 @@ export default function Page() {
 
   async function loadAll(uid = user?.uid, gid = groupId) {
     if (!uid || !gid) return;
-    const readScoped = async <T extends { id: string }>(col: string) => {
-      const [own, shared] = await Promise.all([
-        getDocs(query(collection(db, col), where('userId', '==', uid), where('groupId', '==', gid))),
-        getDocs(query(collection(db, col), where('groupId', '==', gid), where('visibility', '==', 'shared')))
+    setDataLoading(true);
+    setLoadError('');
+    try {
+      const readScoped = async <T extends { id: string }>(col: string) => {
+        const [own, shared] = await Promise.all([
+          getDocs(query(collection(db, col), where('userId', '==', uid), where('groupId', '==', gid))),
+          getDocs(query(collection(db, col), where('groupId', '==', gid), where('visibility', '==', 'shared')))
+        ]);
+        return mergeDocs(
+          own.docs.map(v => ({ id: v.id, ...v.data() } as T)),
+          shared.docs.map(v => ({ id: v.id, ...v.data() } as T))
+        );
+      };
+      const [d, e, t, x, a, n] = await Promise.all([
+        readScoped<Diary>('diaries'),
+        readScoped<EventItem>('events'),
+        readScoped<Todo>('todos'),
+        readScoped<Expense>('expenses'),
+        readScoped<Anniversary>('anniversaries'),
+        getDocs(query(collection(db, 'sharedNotes'), where('groupId', '==', gid)))
       ]);
-      return mergeDocs(
-        own.docs.map(v => ({ id: v.id, ...v.data() } as T)),
-        shared.docs.map(v => ({ id: v.id, ...v.data() } as T))
-      );
-    };
-    const [d, e, t, x, a, n] = await Promise.all([
-      readScoped<Diary>('diaries'),
-      readScoped<EventItem>('events'),
-      readScoped<Todo>('todos'),
-      readScoped<Expense>('expenses'),
-      readScoped<Anniversary>('anniversaries'),
-      getDocs(query(collection(db, 'sharedNotes'), where('groupId', '==', gid)))
-    ]);
-    const byDesc = (key: string) => (a: any, b: any) => String(b[key] || '').localeCompare(String(a[key] || ''));
-    const byAsc = (key: string) => (a: any, b: any) => String(a[key] || '').localeCompare(String(b[key] || ''));
-    setDiaries(d.sort(byDesc('date')));
-    setEvents(e.sort(byAsc('startAt')));
-    setTodos(t.sort(byDesc('createdAt')));
-    setExpenses(x.sort(byDesc('date')));
-    setAnniversaries(a.sort(byAsc('date')));
-    setSharedNotes(n.docs.map(v => ({ id: v.id, ...v.data() } as SharedNote)).sort(byDesc('createdAt')));
+      const byDesc = (key: string) => (a: any, b: any) => String(b[key] || '').localeCompare(String(a[key] || ''));
+      const byAsc = (key: string) => (a: any, b: any) => String(a[key] || '').localeCompare(String(b[key] || ''));
+      setDiaries(d.sort(byDesc('date')));
+      setEvents(e.sort(byAsc('startAt')));
+      setTodos(t.sort(byDesc('createdAt')));
+      setExpenses(x.sort(byDesc('date')));
+      setAnniversaries(a.sort(byAsc('date')));
+      setSharedNotes(n.docs.map(v => ({ id: v.id, ...v.data() } as SharedNote)).sort(byDesc('createdAt')));
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : 'データの読み込みに失敗しました');
+    } finally {
+      setDataLoading(false);
+    }
   }
 
   async function login(register = false) {
@@ -231,6 +241,8 @@ export default function Page() {
   return <div className="shell">
     <header className="top"><div className="brand"><div><h1>AI Life Diary v5</h1><p>カレンダー・ToDo・日記・支出</p></div><div className="avatar">{(user.displayName || user.email || 'U').slice(0, 1).toUpperCase()}</div></div></header>
     <main className="content">
+      {loadError && <div className="error-card"><div><b>データを読み込めませんでした</b><p>{loadError}</p></div><button className="btn secondary" disabled={dataLoading} onClick={() => loadAll(user.uid, groupId)}>{dataLoading ? '再読み込み中...' : '再読み込み'}</button></div>}
+      {dataLoading && !loadError && <div className="sync-status">データを更新しています...</div>}
       {tab === 'home' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} chooseDate={chooseDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} onEdit={openEdit} onDelete={remove} currentUserId={user.uid} naturalAdd={naturalAdd} setTab={setTab} />}
       {tab === 'diary' && <DiaryView diaries={diaries} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} />}
       {tab === 'calendar' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} chooseDate={chooseDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} onEdit={openEdit} onDelete={remove} currentUserId={user.uid} naturalAdd={naturalAdd} setTab={setTab} />}
