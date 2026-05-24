@@ -1,8 +1,10 @@
 import { adminDb } from '@/lib/firebaseAdmin';
 import { buildRagText, embedText, ragDocId, type RagUpsertItem } from '@/lib/rag';
+import { requireAuth, unauthorized } from '@/lib/serverAuth';
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireAuth(req);
     const { items } = await req.json() as { items: RagUpsertItem[] };
     if (!Array.isArray(items)) return Response.json({ error: 'items must be array' }, { status: 400 });
     const db = adminDb();
@@ -10,6 +12,7 @@ export async function POST(req: Request) {
     let skipped = 0;
     for (const item of items.slice(0, 300)) {
       if (!item.id || !item.type || !item.groupId || item.aiReadable === false) { skipped++; continue; }
+      if (item.groupId !== auth.groupId || item.userId !== auth.uid) { skipped++; continue; }
       const text = buildRagText(item);
       const embedding = await embedText(text);
       await db.collection('aiMemory').doc(ragDocId(item.type, item.id)).set({
@@ -32,6 +35,7 @@ export async function POST(req: Request) {
     }
     return Response.json({ ok: true, synced, skipped });
   } catch (e) {
+    if (e instanceof Error && e.message === 'unauthorized') return unauthorized();
     return Response.json({ error: e instanceof Error ? e.message : 'RAG batch failed' }, { status: 500 });
   }
 }

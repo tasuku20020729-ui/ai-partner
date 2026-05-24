@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
+import { requireAuth } from "@/lib/serverAuth";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
@@ -7,6 +8,7 @@ const openai = new OpenAI({
 
 export async function POST(req: NextRequest) {
   try {
+    await requireAuth(req);
     const body = await req.json();
     const { imageUrl } = body;
 
@@ -63,10 +65,14 @@ other
       response.output_text ||
       JSON.stringify(response.output ?? {});
 
-    return NextResponse.json({
-      success: true,
-      result: text,
-    });
+    let expense = null;
+    try {
+      expense = JSON.parse(text);
+    } catch {
+      expense = null;
+    }
+
+    return NextResponse.json({ success: true, expense, result: text });
   } catch (error: any) {
     console.error(error);
 
@@ -75,7 +81,7 @@ other
         success: false,
         error: error?.message || "receipt parse error",
       },
-      { status: 500 }
+      { status: error?.message === "unauthorized" ? 401 : 500 }
     );
   }
 }

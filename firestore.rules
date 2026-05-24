@@ -3,19 +3,59 @@ service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
     function ownUser(uid) { return signedIn() && request.auth.uid == uid; }
+    function userGroup() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.groupId;
+    }
+    function ownResource() {
+      return signedIn() && resource.data.userId == request.auth.uid;
+    }
+    function ownCreatedResource() {
+      return signedIn() && resource.data.createdBy == request.auth.uid;
+    }
+    function inMyGroup(data) {
+      return signedIn() && data.groupId == userGroup();
+    }
+    function readableShared() {
+      return inMyGroup(resource.data) && resource.data.visibility == 'shared';
+    }
     match /users/{userId} { allow read, write: if ownUser(userId); }
     match /pushTokens/{tokenId} {
-      allow create, update: if signedIn() && request.resource.data.userId == request.auth.uid;
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && inMyGroup(request.resource.data);
+      allow update: if signedIn()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.userId == request.auth.uid
+        && inMyGroup(request.resource.data);
       allow read, delete: if signedIn() && resource.data.userId == request.auth.uid;
     }
-    match /sentNotifications/{id} { allow read: if signedIn(); allow write: if false; }
+    match /sentNotifications/{id} { allow read, write: if false; }
     match /{col}/{id} {
-      allow read: if signedIn() && col in ['diaries','events','todos','expenses','anniversaries','sharedNotes'];
-      allow create: if signedIn();
-      allow update, delete: if signedIn() && (
-        resource.data.userId == request.auth.uid ||
-        resource.data.createdBy == request.auth.uid
-      );
+      allow read: if signedIn()
+        && col in ['diaries','events','todos','expenses','anniversaries']
+        && (ownResource() || readableShared());
+      allow create: if signedIn()
+        && col in ['diaries','events','todos','expenses','anniversaries']
+        && request.resource.data.userId == request.auth.uid
+        && inMyGroup(request.resource.data);
+      allow update: if signedIn()
+        && col in ['diaries','events','todos','expenses','anniversaries']
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.userId == request.auth.uid
+        && inMyGroup(request.resource.data);
+      allow delete: if signedIn()
+        && col in ['diaries','events','todos','expenses','anniversaries']
+        && resource.data.userId == request.auth.uid;
+    }
+    match /sharedNotes/{id} {
+      allow read: if inMyGroup(resource.data);
+      allow create: if signedIn()
+        && request.resource.data.createdBy == request.auth.uid
+        && inMyGroup(request.resource.data);
+      allow update: if ownCreatedResource()
+        && request.resource.data.createdBy == request.auth.uid
+        && inMyGroup(request.resource.data);
+      allow delete: if ownCreatedResource();
     }
   }
 }

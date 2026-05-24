@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { requireAuth, unauthorized } from '@/lib/serverAuth';
 
 function fallback(text: string) {
   const amountMatch = text.match(/(\d+[,.]?\d*)/);
@@ -9,6 +10,11 @@ function fallback(text: string) {
 }
 
 export async function POST(req: Request) {
+  try {
+    await requireAuth(req);
+  } catch {
+    return unauthorized();
+  }
   const { text } = await req.json();
   if (!process.env.OPENAI_API_KEY) return Response.json({ expense: fallback(text || '') });
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });

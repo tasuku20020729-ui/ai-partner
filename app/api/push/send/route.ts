@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { QueryDocumentSnapshot } from "firebase-admin/firestore";
 import { adminDb, adminMessaging } from "@/lib/firebaseAdmin";
+import { requireAuth } from "@/lib/serverAuth";
 
 type PushTokenDoc = {
   token?: string;
@@ -9,6 +10,7 @@ type PushTokenDoc = {
 
 export async function POST(req: NextRequest) {
   try {
+    const auth = await requireAuth(req);
     const { title, body, url = "/", userId } = await req.json();
 
     if (!title || !body) {
@@ -18,11 +20,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const targetUserId = userId ? String(userId) : auth.uid;
+    if (targetUserId !== auth.uid) {
+      return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+    }
+
     let q: FirebaseFirestore.Query = adminDb().collection("pushTokens");
 
-    if (userId) {
-      q = q.where("userId", "==", String(userId));
-    }
+    q = q.where("userId", "==", targetUserId);
 
     const snap = await q.get();
 
@@ -65,9 +70,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         ok: false,
-        error: error?.message || "push send error",
+        error: error?.message === "unauthorized" ? "unauthorized" : error?.message || "push send error",
       },
-      { status: 500 }
+      { status: error?.message === "unauthorized" ? 401 : 500 }
     );
   }
 }

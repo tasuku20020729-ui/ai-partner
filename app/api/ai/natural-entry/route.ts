@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { requireAuth, unauthorized } from '@/lib/serverAuth';
 
 const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 const addDays = (d: Date, n: number) => new Date(d.getTime() + n * 86400000);
@@ -38,6 +39,11 @@ function fallback(text: string) {
 }
 
 export async function POST(req: Request) {
+  try {
+    await requireAuth(req);
+  } catch {
+    return unauthorized();
+  }
   const { text } = await req.json();
   if (!process.env.OPENAI_API_KEY) return Response.json({ entry: fallback(text || '') });
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });

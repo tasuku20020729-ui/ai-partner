@@ -22,6 +22,8 @@ const ratesToJpy: Record<Currency, number> = { JPY: 1, MYR: 33, USD: 155 }; // �
 const newGroupId = (uid: string) => `group_${uid}`;
 const yen = (n: number) => `${Math.round(n).toLocaleString()}円`;
 const datePart = (s?: string) => (s || '').slice(0, 10);
+const authedHeaders = async (user: User) => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${await user.getIdToken()}` });
+const mergeDocs = <T extends { id: string }>(...lists: T[][]) => Array.from(new Map(lists.flat().map(item => [item.id, item])).values());
 
 function toRagItem(type: AddMode | string, id: string, item: Record<string, any>) {
   if (!type || type === 'note') {
@@ -114,21 +116,31 @@ export default function Page() {
 
   async function loadAll(uid = user?.uid, gid = groupId) {
     if (!uid || !gid) return;
+    const readScoped = async <T extends { id: string }>(col: string) => {
+      const [own, shared] = await Promise.all([
+        getDocs(query(collection(db, col), where('userId', '==', uid), where('groupId', '==', gid))),
+        getDocs(query(collection(db, col), where('groupId', '==', gid), where('visibility', '==', 'shared')))
+      ]);
+      return mergeDocs(
+        own.docs.map(v => ({ id: v.id, ...v.data() } as T)),
+        shared.docs.map(v => ({ id: v.id, ...v.data() } as T))
+      );
+    };
     const [d, e, t, x, a, n] = await Promise.all([
-      getDocs(query(collection(db, 'diaries'), where('groupId', '==', gid))),
-      getDocs(query(collection(db, 'events'), where('groupId', '==', gid))),
-      getDocs(query(collection(db, 'todos'), where('groupId', '==', gid))),
-      getDocs(query(collection(db, 'expenses'), where('groupId', '==', gid))),
-      getDocs(query(collection(db, 'anniversaries'), where('groupId', '==', gid))),
+      readScoped<Diary>('diaries'),
+      readScoped<EventItem>('events'),
+      readScoped<Todo>('todos'),
+      readScoped<Expense>('expenses'),
+      readScoped<Anniversary>('anniversaries'),
       getDocs(query(collection(db, 'sharedNotes'), where('groupId', '==', gid)))
     ]);
     const byDesc = (key: string) => (a: any, b: any) => String(b[key] || '').localeCompare(String(a[key] || ''));
     const byAsc = (key: string) => (a: any, b: any) => String(a[key] || '').localeCompare(String(b[key] || ''));
-    setDiaries(d.docs.map(v => ({ id: v.id, ...v.data() } as Diary)).sort(byDesc('date')));
-    setEvents(e.docs.map(v => ({ id: v.id, ...v.data() } as EventItem)).sort(byAsc('startAt')));
-    setTodos(t.docs.map(v => ({ id: v.id, ...v.data() } as Todo)).sort(byDesc('createdAt')));
-    setExpenses(x.docs.map(v => ({ id: v.id, ...v.data() } as Expense)).sort(byDesc('date')));
-    setAnniversaries(a.docs.map(v => ({ id: v.id, ...v.data() } as Anniversary)).sort(byAsc('date')));
+    setDiaries(d.sort(byDesc('date')));
+    setEvents(e.sort(byAsc('startAt')));
+    setTodos(t.sort(byDesc('createdAt')));
+    setExpenses(x.sort(byDesc('date')));
+    setAnniversaries(a.sort(byAsc('date')));
     setSharedNotes(n.docs.map(v => ({ id: v.id, ...v.data() } as SharedNote)).sort(byDesc('createdAt')));
   }
 
@@ -176,11 +188,15 @@ export default function Page() {
     if (!confirm('削除しますか？')) return;
     const map: Record<string, string> = { diary: 'diaries', event: 'events', todo: 'todos', expense: 'expenses', anniversary: 'anniversaries', note: 'sharedNotes' };
     await deleteDoc(doc(db, map[type], id));
-    fetch('/api/rag/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: type === 'note' ? 'sharedNote' : type, id }) }).catch(() => undefined);
+    fetch('/api/rag/delete', { method: 'POST', headers: await authedHeaders(user!), body: JSON.stringify({ type: type === 'note' ? 'sharedNote' : type, id }) }).catch(() => undefined);
     await loadAll();
   }
   async function toggleTodo(todo: Todo) { await updateDoc(doc(db, 'todos', todo.id), { status: todo.status === 'done' ? 'open' : 'done', updatedAt: new Date().toISOString() }); await loadAll(); }
-  function saveGroupId(v: string) { setGroupId(v); localStorage.setItem(`groupId_${user!.uid}`, v); }
+  function saveGroupId(v: string) {
+    setGroupId(v);
+    localStorage.setItem(`groupId_${user!.uid}`, v);
+    setDoc(doc(db, 'users', user!.uid), { groupId: v, updatedAt: new Date().toISOString() }, { merge: true }).catch(e => alert(e instanceof Error ? e.message : '共有IDの保存に失敗しました'));
+  }
   function savePartnerName(v: string) { setPartnerName(v); localStorage.setItem(`partnerName_${user!.uid}`, v); }
 
   async function enablePushNotifications() {
@@ -240,7 +256,7 @@ export default function Page() {
         const refDoc = await addDoc(collection(db, map[type]), savedPayload);
         savedId = refDoc.id;
       }
-      fetch('/api/rag/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(toRagItem(type, savedId, savedPayload)) }).catch(() => undefined);
+      fetch('/api/rag/sync', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify(toRagItem(type, savedId, savedPayload)) }).catch(() => undefined);
       setAddMode(null); await loadAll();
     } catch (e) { alert(e instanceof Error ? e.message : '保存に失敗しました'); }
     finally { setSaving(false); }
@@ -257,7 +273,7 @@ export default function Page() {
     try {
       const res = await fetch('/api/ai/ask', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authedHeaders(user),
         body: JSON.stringify({
           question: q,
           partnerName,
@@ -276,7 +292,7 @@ export default function Page() {
   }
   async function naturalAdd(text: string) {
     if (!text.trim()) return;
-    const res = await fetch('/api/ai/natural-entry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+    const res = await fetch('/api/ai/natural-entry', { method: 'POST', headers: await authedHeaders(user!), body: JSON.stringify({ text }) });
     const json = await res.json();
     const entry = json.entry || {};
     if (entry.type === 'event') await saveDoc('event', normalize('event', { ...entry, visibility: 'private', aiReadable: true }));
@@ -296,7 +312,7 @@ export default function Page() {
         ...visible.anniversaries.map((x:any) => toRagItem('anniversary', x.id, x)),
         ...visible.sharedNotes.map((x:any) => toRagItem('note', x.id, x))
       ];
-      const res = await fetch('/api/rag/batch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }) });
+      const res = await fetch('/api/rag/batch', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify({ items }) });
       const json = await res.json();
       alert(`RAG再同期完了: ${json.synced || 0}件`);
     } catch (e) {
@@ -334,7 +350,7 @@ function AddModal({ mode, setMode, save, user, partnerName }: { mode: AddMode; s
     {mode === 'diary' && <><input className="input" placeholder="タイトル" onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.date} onChange={e => set('date', e.target.value)} /><textarea className="textarea" placeholder="内容" onChange={e => set('content', e.target.value)} /><input className="input" placeholder="気分・タグ" onChange={e => set('mood', e.target.value)} /><input className="input" placeholder="場所名" onChange={e => set('locationName', e.target.value)} /><button className="btn secondary" onClick={() => navigator.geolocation?.getCurrentPosition(pos => setForm(f => ({ ...f, lat: pos.coords.latitude, lng: pos.coords.longitude })))}>現在地をセット</button><label>写真</label><input className="input" type="file" accept="image/*" multiple onChange={async e => { const files = Array.from(e.target.files || []) as File[]; const urls: string[] = []; for (const file of files) urls.push(await uploadImage(file, 'diaries')); set('photos', urls); }} /></>}
     {mode === 'event' && <><input className="input" placeholder="予定名" onChange={e => set('title', e.target.value)} /><input className="input" type="datetime-local" value={form.startAt} onChange={e => set('startAt', e.target.value)} /><input className="input" type="datetime-local" onChange={e => set('endAt', e.target.value)} /><input className="input" placeholder="場所" onChange={e => set('location', e.target.value)} /><textarea className="textarea" placeholder="説明" onChange={e => set('description', e.target.value)} /><label><input type="checkbox" checked={!!form.reminderEnabled} onChange={e => set('reminderEnabled', e.target.checked)} /> リマインド</label><input className="input" type="datetime-local" onChange={e => set('remindAt', e.target.value)} /></>}
     {mode === 'todo' && <><input className="input" placeholder="ToDo" onChange={e => set('title', e.target.value)} /><input className="input" type="date" onChange={e => set('dueAt', e.target.value)} /><select className="select" value={form.priority} onChange={e => set('priority', e.target.value)}><option value="low">低</option><option value="middle">中</option><option value="high">高</option></select><textarea className="textarea" placeholder="説明" onChange={e => set('description', e.target.value)} /><label><input type="checkbox" checked={!!form.reminderEnabled} onChange={e => set('reminderEnabled', e.target.checked)} /> リマインド</label><input className="input" type="datetime-local" onChange={e => set('remindAt', e.target.value)} /></>}
-    {mode === 'expense' && <><div className="card" style={{ boxShadow: 'none' }}><h3>AI自然文入力</h3><input className="input" placeholder="例: 昨日Grabで35リンギット使った" value={aiText} onChange={e => setAiText(e.target.value)} /><button className="btn secondary" onClick={async () => { const res = await fetch('/api/ai/natural-entry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: aiText }) }); const json = await res.json(); setForm(f => ({ ...f, ...json.entry, inputType: 'ai_text' })); }}>AIで入力</button></div><label>レシート写真</label><input className="input" type="file" accept="image/*" onChange={async e => { const file = e.target.files?.[0]; if (!file) return; setReceiptBusy(true); const url = await uploadImage(file, 'receipts'); const res = await fetch('/api/ai/receipt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ imageUrl: url }) }); const json = await res.json(); setForm(f => ({ ...f, ...json.expense, receiptImageUrl: url, inputType: 'receipt' })); setReceiptBusy(false); }} />{receiptBusy && <p className="muted">レシート解析中...</p>}<input className="input" placeholder="タイトル" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.date} onChange={e => set('date', e.target.value)} /><input className="input" type="number" placeholder="金額" value={form.amount || ''} onChange={e => set('amount', e.target.value)} /><select className="select" value={form.currency} onChange={e => set('currency', e.target.value)}><option value="JPY">JPY</option><option value="MYR">MYR</option><option value="USD">USD</option></select><select className="select" value={form.category} onChange={e => set('category', e.target.value)}>{categories.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}</select><input className="input" placeholder="店名" value={form.shopName || ''} onChange={e => set('shopName', e.target.value)} /><textarea className="textarea" placeholder="メモ" value={form.memo || ''} onChange={e => set('memo', e.target.value)} /></>}
+    {mode === 'expense' && <><div className="card" style={{ boxShadow: 'none' }}><h3>AI自然文入力</h3><input className="input" placeholder="例: 昨日Grabで35リンギット使った" value={aiText} onChange={e => setAiText(e.target.value)} /><button className="btn secondary" onClick={async () => { const res = await fetch('/api/ai/natural-entry', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify({ text: aiText }) }); const json = await res.json(); setForm(f => ({ ...f, ...json.entry, inputType: 'ai_text' })); }}>AIで入力</button></div><label>レシート写真</label><input className="input" type="file" accept="image/*" onChange={async e => { const file = e.target.files?.[0]; if (!file) return; setReceiptBusy(true); const url = await uploadImage(file, 'receipts'); const res = await fetch('/api/ai/receipt', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify({ imageUrl: url }) }); const json = await res.json(); setForm(f => ({ ...f, ...json.expense, receiptImageUrl: url, inputType: 'receipt' })); setReceiptBusy(false); }} />{receiptBusy && <p className="muted">レシート解析中...</p>}<input className="input" placeholder="タイトル" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.date} onChange={e => set('date', e.target.value)} /><input className="input" type="number" placeholder="金額" value={form.amount || ''} onChange={e => set('amount', e.target.value)} /><select className="select" value={form.currency} onChange={e => set('currency', e.target.value)}><option value="JPY">JPY</option><option value="MYR">MYR</option><option value="USD">USD</option></select><select className="select" value={form.category} onChange={e => set('category', e.target.value)}>{categories.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}</select><input className="input" placeholder="店名" value={form.shopName || ''} onChange={e => set('shopName', e.target.value)} /><textarea className="textarea" placeholder="メモ" value={form.memo || ''} onChange={e => set('memo', e.target.value)} /></>}
     {mode === 'anniversary' && <><input className="input" placeholder="記念日名" onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.date} onChange={e => set('date', e.target.value)} /><select className="select" value={form.repeat} onChange={e => set('repeat', e.target.value)}><option value="yearly">毎年</option><option value="none">一回だけ</option></select></>}
     {mode === 'note' && <><input className="input" placeholder="メモタイトル" onChange={e => set('title', e.target.value)} /><textarea className="textarea" placeholder="共有メモ内容" onChange={e => set('content', e.target.value)} /></>}
     {mode !== 'note' && <><select className="select" value={form.visibility} onChange={e => set('visibility', e.target.value)}><option value="private">自分だけ</option><option value="shared">共有</option></select><label><input type="checkbox" checked={form.aiReadable} onChange={e => set('aiReadable', e.target.checked)} /> AI参照を許可</label></>}<div className="grid" style={{ marginTop: 14 }}><button className="btn secondary" onClick={() => setMode(null)}>閉じる</button><button className="btn" onClick={() => save(mode, normalize(mode, form))}>保存</button></div><p className="muted">共有設定にすると、同じ共有IDの相手がAIで参照できます。相手の呼び名: {partnerName}</p></div></div>;

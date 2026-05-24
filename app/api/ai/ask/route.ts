@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { adminDb } from '@/lib/firebaseAdmin';
 import { cosineSimilarity, embedText } from '@/lib/rag';
+import { requireAuth, unauthorized } from '@/lib/serverAuth';
 
 type Body = { question: string; partnerName?: string; currentUserId?: string; groupId?: string; data: any };
 const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
@@ -103,7 +104,14 @@ function fallbackAnswer(body: Body) {
 }
 
 export async function POST(req: Request) {
-  const body = await req.json() as Body;
+  let auth: Awaited<ReturnType<typeof requireAuth>>;
+  try {
+    auth = await requireAuth(req);
+  } catch {
+    return unauthorized();
+  }
+  const rawBody = await req.json() as Body;
+  const body = { ...rawBody, currentUserId: auth.uid, groupId: auth.groupId };
   const filtered = scoped(body);
   if (!process.env.OPENAI_API_KEY) return Response.json({ answer: fallbackAnswer(body), fallback: true });
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
