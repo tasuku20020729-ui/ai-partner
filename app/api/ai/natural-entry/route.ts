@@ -1,4 +1,6 @@
 import OpenAI from 'openai';
+import { textBodySchema, validationError } from '@/lib/apiSchemas';
+import { requireAuth, unauthorized } from '@/lib/serverAuth';
 
 const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 const addDays = (d: Date, n: number) => new Date(d.getTime() + n * 86400000);
@@ -19,13 +21,13 @@ function timeFromText(text: string) {
   return `${m[1].padStart(2, '0')}:${(m[2] || '00').padStart(2, '0')}`;
 }
 function categoryFromText(text: string) {
-  if (/ランチ|夕食|朝食|ご飯|スーパー|食品|カフェ|食/.test(text)) return 'food';
-  if (/日用品|洗剤|ティッシュ|雑貨/.test(text)) return 'daily_goods';
-  if (/デート|交際|プレゼント/.test(text)) return 'dating';
-  if (/電車|バス|タクシー|Grab|交通/.test(text)) return 'transport';
-  if (/旅行|ホテル|航空券/.test(text)) return 'travel';
-  if (/病院|薬|医療/.test(text)) return 'medical';
-  if (/映画|ゲーム|娯楽|ライブ/.test(text)) return 'entertainment';
+  if (/ランチ|昼食|夕食|晩ごはん|朝食|ご飯|ごはん|スーパー|食品|食材|カフェ|喫茶|食|レストラン|居酒屋|コンビニ|セブン|ローソン|ファミマ|スタバ|マック|マクド|GrabFood|Uber Eats|出前/.test(text)) return 'food';
+  if (/日用品|生活用品|洗剤|ティッシュ|トイレットペーパー|シャンプー|石鹸|せっけん|歯ブラシ|歯磨き|掃除|雑貨/.test(text)) return 'daily_goods';
+  if (/デート|交際|プレゼント|ギフト|記念日|花|彼女|彼氏|パートナー/.test(text)) return 'dating';
+  if (/電車|地下鉄|バス|タクシー|Grab|Uber|交通|駐車|高速|ガソリン|Suica|PASMO|切符|運賃/.test(text)) return 'transport';
+  if (/旅行|ホテル|宿泊|航空券|飛行機|新幹線|旅館|Airbnb|観光|ツアー|レンタカー/.test(text)) return 'travel';
+  if (/病院|薬|薬局|ドラッグストア|医療|診察|歯医者|クリニック|処方|サプリ|コンタクト/.test(text)) return 'medical';
+  if (/映画|ゲーム|娯楽|ライブ|コンサート|イベント|本|漫画|サブスク|Netflix|Spotify|カラオケ|チケット/.test(text)) return 'entertainment';
   return 'other';
 }
 function fallback(text: string) {
@@ -38,7 +40,19 @@ function fallback(text: string) {
 }
 
 export async function POST(req: Request) {
-  const { text } = await req.json();
+  try {
+    await requireAuth(req);
+  } catch {
+    return unauthorized();
+  }
+  let text = '';
+  try {
+    text = textBodySchema.parse(await req.json()).text;
+  } catch (e) {
+    const invalid = validationError(e);
+    if (invalid) return invalid;
+    throw e;
+  }
   if (!process.env.OPENAI_API_KEY) return Response.json({ entry: fallback(text || '') });
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const res = await client.responses.create({

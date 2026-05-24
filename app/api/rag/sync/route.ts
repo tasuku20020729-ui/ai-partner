@@ -1,10 +1,13 @@
 import { adminDb } from '@/lib/firebaseAdmin';
-import { buildRagText, embedText, ragDocId, type RagUpsertItem } from '@/lib/rag';
+import { buildRagText, embedText, ragDocId } from '@/lib/rag';
+import { ragUpsertSchema, validationError } from '@/lib/apiSchemas';
+import { requireAuth, unauthorized } from '@/lib/serverAuth';
 
 export async function POST(req: Request) {
   try {
-    const item = await req.json() as RagUpsertItem;
-    if (!item.id || !item.type || !item.groupId) return Response.json({ error: 'id, type, groupId are required' }, { status: 400 });
+    const auth = await requireAuth(req);
+    const item = ragUpsertSchema.parse(await req.json());
+    if (item.groupId !== auth.groupId || item.userId !== auth.uid) return unauthorized();
     if (item.aiReadable === false) return Response.json({ skipped: true, reason: 'aiReadable=false' });
     const text = buildRagText(item);
     const embedding = await embedText(text);
@@ -26,6 +29,9 @@ export async function POST(req: Request) {
     }, { merge: true });
     return Response.json({ ok: true });
   } catch (e) {
+    if (e instanceof Error && e.message === 'unauthorized') return unauthorized();
+    const invalid = validationError(e);
+    if (invalid) return invalid;
     return Response.json({ error: e instanceof Error ? e.message : 'RAG sync failed' }, { status: 500 });
   }
 }

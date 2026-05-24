@@ -1,7 +1,7 @@
 # AI Life Diary v5
 
 日記・予定・ToDo・支出・記念日・共有メモをAIで横断検索できる生活管理アプリです。
-第5版では、Firestoreの構造化検索に加えて、OpenAI Embeddingsを使ったRAG意味検索を追加しています。
+第5版では、Firestoreの構造化検索に加えて、OpenAI Embeddingsを使ったAI意味検索を追加しています。
 
 ## 主な機能
 
@@ -11,9 +11,9 @@
 - レシートAI解析
 - AI自然文登録
 - PWA Push通知の土台
-- 本格RAG用 `aiMemory` コレクション
+- AI検索用 `aiMemory` コレクション
 - 新規登録データの自動Embedding化
-- 既存データのRAG再同期ボタン
+- 設定画面からのAI検索修復
 
 ## セットアップ
 
@@ -35,7 +35,7 @@ npm run dev
 - anniversaries
 - sharedNotes
 
-保存時またはAI画面の「RAGインデックスを再同期」ボタンで、OpenAI Embeddings APIを使ってベクトルを作成します。
+保存時に自動でOpenAI Embeddings APIを使ってベクトルを作成します。過去データや同期失敗の修復が必要な場合だけ、設定画面の「AI検索を修復」を使います。
 AI質問時は、質問文もEmbedding化し、`aiMemory` の類似度上位データをAIに渡します。
 
 ## 必要な環境変数
@@ -56,7 +56,7 @@ FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY----
 
 1. 通常どおり日記・予定・ToDo・支出などを登録
 2. 新規データは自動で `aiMemory` に同期
-3. 既存データはAI画面の「RAGインデックスを再同期」を押す
+3. 必要な場合だけ設定画面の「AI検索を修復」を押す
 4. 「前に雰囲気の良かったカフェどこだっけ？」のような曖昧検索が可能になります
 
 ## 注意
