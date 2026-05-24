@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { textBodySchema, validationError } from '@/lib/apiSchemas';
 import { requireAuth, unauthorized } from '@/lib/serverAuth';
 
 function fallback(text: string) {
@@ -15,7 +16,14 @@ export async function POST(req: Request) {
   } catch {
     return unauthorized();
   }
-  const { text } = await req.json();
+  let text = '';
+  try {
+    text = textBodySchema.parse(await req.json()).text;
+  } catch (e) {
+    const invalid = validationError(e);
+    if (invalid) return invalid;
+    throw e;
+  }
   if (!process.env.OPENAI_API_KEY) return Response.json({ expense: fallback(text || '') });
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const res = await client.responses.create({

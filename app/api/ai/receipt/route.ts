@@ -1,23 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
+import { receiptBodySchema, validationError } from "@/lib/apiSchemas";
+import { todayIso } from "@/lib/date";
 import { requireAuth } from "@/lib/serverAuth";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
 });
 
+function normalizeReceiptExpense(expense: any) {
+  if (!expense || typeof expense !== "object") return null;
+  const date = typeof expense.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(expense.date)
+    ? expense.date
+    : todayIso();
+  return { ...expense, date };
+}
+
 export async function POST(req: NextRequest) {
   try {
     await requireAuth(req);
-    const body = await req.json();
-    const { imageUrl } = body;
-
-    if (!imageUrl) {
-      return NextResponse.json(
-        { error: "imageUrl is required" },
-        { status: 400 }
-      );
-    }
+    const { imageUrl } = receiptBodySchema.parse(await req.json());
 
     const response = await openai.responses.create({
       model: process.env.OPENAI_CHAT_MODEL || "gpt-4.1-mini",
@@ -80,9 +82,11 @@ other
       expense = null;
     }
 
-    return NextResponse.json({ success: true, expense, result: text });
+    return NextResponse.json({ success: true, expense: normalizeReceiptExpense(expense), result: text });
   } catch (error: any) {
     console.error(error);
+    const invalid = validationError(error);
+    if (invalid) return invalid;
 
     return NextResponse.json(
       {

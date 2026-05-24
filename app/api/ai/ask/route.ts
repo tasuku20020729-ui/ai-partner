@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { askBodySchema, validationError } from '@/lib/apiSchemas';
 import { adminDb } from '@/lib/firebaseAdmin';
 import { cosineSimilarity, embedText } from '@/lib/rag';
 import { requireAuth, unauthorized } from '@/lib/serverAuth';
@@ -110,7 +111,14 @@ export async function POST(req: Request) {
   } catch {
     return unauthorized();
   }
-  const rawBody = await req.json() as Body;
+  let rawBody: Body;
+  try {
+    rawBody = askBodySchema.parse(await req.json()) as Body;
+  } catch (e) {
+    const invalid = validationError(e);
+    if (invalid) return invalid;
+    throw e;
+  }
   const body = { ...rawBody, currentUserId: auth.uid, groupId: auth.groupId };
   const filtered = scoped(body);
   if (!process.env.OPENAI_API_KEY) return Response.json({ answer: fallbackAnswer(body), fallback: true });

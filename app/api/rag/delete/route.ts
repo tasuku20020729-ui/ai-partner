@@ -1,12 +1,12 @@
 import { adminDb } from '@/lib/firebaseAdmin';
+import { ragDeleteSchema, validationError } from '@/lib/apiSchemas';
 import { ragDocId } from '@/lib/rag';
 import { requireAuth, unauthorized } from '@/lib/serverAuth';
 
 export async function POST(req: Request) {
   try {
     const auth = await requireAuth(req);
-    const { type, id } = await req.json() as { type: string; id: string };
-    if (!type || !id) return Response.json({ error: 'type and id are required' }, { status: 400 });
+    const { type, id } = ragDeleteSchema.parse(await req.json());
     const ref = adminDb().collection('aiMemory').doc(ragDocId(type, id));
     const snap = await ref.get();
     const data = snap.data();
@@ -15,6 +15,8 @@ export async function POST(req: Request) {
     return Response.json({ ok: true });
   } catch (e) {
     if (e instanceof Error && e.message === 'unauthorized') return unauthorized();
+    const invalid = validationError(e);
+    if (invalid) return invalid;
     return Response.json({ error: e instanceof Error ? e.message : 'RAG delete failed' }, { status: 500 });
   }
 }
