@@ -30,16 +30,6 @@ export async function POST(req: NextRequest) {
               text: `
 このレシート画像を解析してください。
 
-以下のJSON形式のみで返してください。
-
-{
-  "shopName": "",
-  "amount": 0,
-  "currency": "JPY",
-  "date": "",
-  "category": "food"
-}
-
 category は以下から選択:
 food
 daily_goods
@@ -59,6 +49,24 @@ other
           ],
         },
       ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "receipt_expense",
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              shopName: { type: "string" },
+              amount: { type: "number" },
+              currency: { type: "string", enum: ["JPY", "MYR", "USD"] },
+              date: { type: "string" },
+              category: { type: "string", enum: ["food", "daily_goods", "dating", "transport", "travel", "medical", "entertainment", "other"] },
+            },
+            required: ["shopName", "amount", "currency", "date", "category"],
+          },
+        },
+      },
     });
 
     const text =
