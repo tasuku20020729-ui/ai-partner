@@ -19,6 +19,7 @@ const categories: { value: ExpenseCategory; label: string }[] = [
   { value: 'food', label: '食費' }, { value: 'daily_goods', label: '日用品' }, { value: 'dating', label: '交際費' }, { value: 'transport', label: '交通費' }, { value: 'travel', label: '旅行' }, { value: 'medical', label: '医療費' }, { value: 'entertainment', label: '娯楽' }, { value: 'other', label: 'その他' }
 ];
 const categoryLabel = Object.fromEntries(categories.map(c => [c.value, c.label]));
+const priorityLabel = { high: '高', middle: '中', low: '低' };
 const ratesToJpy: Record<Currency, number> = { JPY: 1, MYR: 33, USD: 155 }; // 自動取得は設計から除外。設定値として固定。
 const newGroupId = (uid: string) => `group_${uid}`;
 const yen = (n: number) => `${Math.round(n).toLocaleString()}円`;
@@ -468,12 +469,18 @@ function CalendarHomeView({ selectedDate, setSelectedDate, chooseDate, calendarM
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
   const blanks = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
   const cells = [...Array(blanks).fill(null), ...Array.from({ length: daysInMonth }, (_, i) => i + 1)];
-  const selectedDiaries = diaries.filter((d: Diary) => d.date === selectedDate);
-  const selectedEvents = events.filter((e: EventItem) => datePart(e.startAt) === selectedDate);
-  const selectedTodos = todos.filter((t: Todo) => (t.dueAt || '').slice(0, 10) === selectedDate);
-  const selectedExpenses = expenses.filter((e: Expense) => e.date === selectedDate);
-  const selectedAnniversaries = anniversaries.filter((a: Anniversary) => a.date?.slice(5) === selectedDate.slice(5));
+  const selectedDiaries = diaries.filter((d: Diary) => d.date === selectedDate).sort((a: Diary, b: Diary) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  const selectedEvents = events.filter((e: EventItem) => datePart(e.startAt) === selectedDate).sort((a: EventItem, b: EventItem) => String(a.startAt || '').localeCompare(String(b.startAt || '')));
+  const selectedTodos = todos.filter((t: Todo) => (t.dueAt || '').slice(0, 10) === selectedDate).sort((a: Todo, b: Todo) => {
+    if (a.status !== b.status) return a.status === 'done' ? 1 : -1;
+    const priority = { high: 0, middle: 1, low: 2 } as Record<string, number>;
+    return (priority[a.priority] ?? 3) - (priority[b.priority] ?? 3);
+  });
+  const selectedExpenses = expenses.filter((e: Expense) => e.date === selectedDate).sort((a: Expense, b: Expense) => Number(b.amountBase || 0) - Number(a.amountBase || 0));
+  const selectedAnniversaries = anniversaries.filter((a: Anniversary) => a.date?.slice(5) === selectedDate.slice(5)).sort((a: Anniversary, b: Anniversary) => String(a.title || '').localeCompare(String(b.title || '')));
   const selectedTotal = selectedExpenses.reduce((s: number, e: Expense) => s + Number(e.amountBase || 0), 0);
+  const openTodoCount = selectedTodos.filter((t: Todo) => t.status !== 'done').length;
+  const hasSelectedItems = Boolean(selectedEvents.length || selectedTodos.length || selectedDiaries.length || selectedExpenses.length || selectedAnniversaries.length);
   const hasOnDate = (date: string) => ({
     diary: diaries.some((d: Diary) => d.date === date),
     event: events.some((e: EventItem) => datePart(e.startAt) === date),
@@ -496,13 +503,19 @@ function CalendarHomeView({ selectedDate, setSelectedDate, chooseDate, calendarM
     <section className="selected-day-panel">
       <div className="row"><div><p className="eyebrow">選択中</p><h3>{new Date(`${selectedDate}T00:00:00+09:00`).toLocaleDateString('ja-JP', { dateStyle: 'full' })}</h3></div><div className="day-total">{yen(selectedTotal)}</div></div>
       <div className="quick date-actions"><button onClick={() => openAdd('diary', selectedDate)}><NotebookPen size={16} />日記</button><button onClick={() => openAdd('todo', selectedDate)}><CheckSquare size={16} />ToDo</button><button onClick={() => openAdd('event', selectedDate)}><CalendarDays size={16} />予定</button><button onClick={() => openAdd('expense', selectedDate)}><ReceiptText size={16} />支出</button></div>
+      <div className="day-summary">
+        <span><b>{selectedEvents.length}</b>予定</span>
+        <span><b>{openTodoCount}</b>未完了</span>
+        <span><b>{selectedDiaries.length}</b>日記</span>
+        <span><b>{selectedExpenses.length}</b>支出</span>
+      </div>
       <div className="day-list">
-        {selectedEvents.map((e: EventItem) => <p key={e.id}><CalendarDays size={14} />{new Date(e.startAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })} {e.title}{e.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('event', e)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('event', e.id)}>削除</button></span>}</p>)}
-        {selectedTodos.map((t: Todo) => <p key={t.id}><CheckSquare size={14} />{t.title}{t.status === 'done' ? '（完了）' : ''}{t.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('todo', t)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('todo', t.id)}>削除</button></span>}</p>)}
-        {selectedDiaries.map((d: Diary) => <p key={d.id}><NotebookPen size={14} />{d.title}{d.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('diary', d)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('diary', d.id)}>削除</button></span>}</p>)}
-        {selectedExpenses.map((e: Expense) => <p key={e.id}><ReceiptText size={14} />{e.title} {yen(Number(e.amountBase || 0))}{e.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('expense', e)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('expense', e.id)}>削除</button></span>}</p>)}
-        {selectedAnniversaries.map((a: Anniversary) => <p key={a.id}><Gift size={14} />{a.title}{a.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('anniversary', a)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('anniversary', a.id)}>削除</button></span>}</p>)}
-        {!selectedEvents.length && !selectedTodos.length && !selectedDiaries.length && !selectedExpenses.length && !selectedAnniversaries.length && <p className="muted">この日の予定・ToDo・日記はまだありません。</p>}
+        {selectedAnniversaries.length > 0 && <div className="day-group"><h4><Gift size={15} />記念日</h4>{selectedAnniversaries.map((a: Anniversary) => <article className="day-item" key={a.id}><div><b>{a.title}</b><span>{a.repeat === 'yearly' ? '毎年' : '一回'}</span></div>{a.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('anniversary', a)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('anniversary', a.id)}>削除</button></span>}</article>)}</div>}
+        {selectedEvents.length > 0 && <div className="day-group"><h4><CalendarDays size={15} />予定</h4>{selectedEvents.map((e: EventItem) => <article className="day-item" key={e.id}><div><b>{e.title}</b><span>{new Date(e.startAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}{e.location ? ` / ${e.location}` : ''}</span></div>{e.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('event', e)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('event', e.id)}>削除</button></span>}</article>)}</div>}
+        {selectedTodos.length > 0 && <div className="day-group"><h4><CheckSquare size={15} />ToDo</h4>{selectedTodos.map((t: Todo) => <article className={`day-item ${t.status === 'done' ? 'is-done' : ''}`} key={t.id}><div><b>{t.title}</b><span>{t.status === 'done' ? '完了' : '未完了'} / 優先度{priorityLabel[t.priority]}</span></div>{t.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('todo', t)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('todo', t.id)}>削除</button></span>}</article>)}</div>}
+        {selectedExpenses.length > 0 && <div className="day-group"><h4><ReceiptText size={15} />支出 <span>{yen(selectedTotal)}</span></h4>{selectedExpenses.map((e: Expense) => <article className="day-item" key={e.id}><div><b>{e.title}</b><span>{categoryLabel[e.category]} / {yen(Number(e.amountBase || 0))}</span></div>{e.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('expense', e)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('expense', e.id)}>削除</button></span>}</article>)}</div>}
+        {selectedDiaries.length > 0 && <div className="day-group"><h4><NotebookPen size={15} />日記</h4>{selectedDiaries.map((d: Diary) => <article className="day-item" key={d.id}><div><b>{d.title}</b><span>{d.mood || d.location?.name || d.ownerName}</span></div>{d.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('diary', d)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('diary', d.id)}>削除</button></span>}</article>)}</div>}
+        {!hasSelectedItems && <p className="muted">この日の予定・ToDo・日記はまだありません。</p>}
       </div>
     </section>
     <section className="card natural-card"><h3>自然文で追加</h3><div className="compose"><input className="input" placeholder="例: 明日19時に歯医者 / 今週中に課題提出 / 昨日ランチで1200円" value={naturalText} disabled={saving} onChange={e => setNaturalText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && naturalText.trim() && !saving) { naturalAdd(naturalText); setNaturalText(''); } }} /><button className="btn" disabled={!naturalText.trim() || saving} onClick={() => { naturalAdd(naturalText); setNaturalText(''); }}>{saving ? '処理中...' : '追加'}</button></div></section>
