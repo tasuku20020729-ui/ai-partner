@@ -312,7 +312,8 @@ export default function Page() {
       }
       const ragPayload = toRagItem(type, savedId, savedPayload);
       const shouldSync = type === 'note' || savedPayload.aiReadable !== false;
-      fetch(shouldSync ? '/api/rag/sync' : '/api/rag/delete', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify(shouldSync ? ragPayload : { type: type === 'note' ? 'sharedNote' : type, id: savedId }) }).catch(() => undefined);
+      const deletePayload = { type, id: savedId };
+      fetch(shouldSync ? '/api/rag/sync' : '/api/rag/delete', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify(shouldSync ? ragPayload : deletePayload) }).catch(() => undefined);
       setEditTarget(null); setAddMode(null); await loadAll();
     } catch (e) { alert(e instanceof Error ? e.message : '保存に失敗しました'); }
     finally { setSaving(false); }
