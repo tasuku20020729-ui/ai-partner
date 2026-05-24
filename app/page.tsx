@@ -129,6 +129,7 @@ export default function Page() {
   const [calendarMonth, setCalendarMonth] = useState(todayIso());
   const [datePickerOpen, setDatePickerOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<EditTarget>(null);
+  const [naturalDraft, setNaturalDraft] = useState<Record<string, any> | null>(null);
 
   useEffect(() => onAuthStateChanged(auth, async (u) => {
     try {
@@ -218,6 +219,7 @@ export default function Page() {
   const memoryCards = buildMemoryCards(diaries, expenses, events, anniversaries);
   const reminderCards = buildReminderCards(todos, events, anniversaries);
   const openAddForDate = (mode: AddMode, date = selectedDate) => {
+    setNaturalDraft(null);
     setSelectedDate(date);
     setCalendarMonth(date);
     setDatePickerOpen(false);
@@ -225,6 +227,7 @@ export default function Page() {
     setAddMode(mode);
   };
   const openEdit = (mode: Exclude<AddMode, null>, item: Record<string, any>) => {
+    setNaturalDraft(null);
     const date = item.date || datePart(item.startAt) || item.dueAt || selectedDate;
     setSelectedDate(date);
     setCalendarMonth(date);
@@ -259,7 +262,7 @@ export default function Page() {
     </main>
     <BottomNav tab={tab} setTab={setTab} />
     {datePickerOpen && <DateActionSheet selectedDate={selectedDate} close={() => setDatePickerOpen(false)} openAdd={openAddForDate} />}
-    {addMode && <AddModal mode={addMode} setMode={setAddMode} close={() => { setEditTarget(null); setAddMode(null); }} save={saveDoc} user={user} groupId={groupId} partnerName={partnerName} selectedDate={selectedDate} editTarget={editTarget} saving={saving} />}
+    {addMode && <AddModal mode={addMode} setMode={setAddMode} close={() => { setNaturalDraft(null); setEditTarget(null); setAddMode(null); }} save={saveDoc} user={user} groupId={groupId} partnerName={partnerName} selectedDate={selectedDate} editTarget={editTarget} draftData={naturalDraft} saving={saving} />}
   </div>;
 
   async function remove(type: string, id: string) {
@@ -369,7 +372,7 @@ export default function Page() {
       const shouldSync = type === 'note' || savedPayload.aiReadable !== false;
       const deletePayload = { type, id: savedId };
       fetch(shouldSync ? '/api/rag/sync' : '/api/rag/delete', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify(shouldSync ? ragPayload : deletePayload) }).catch(() => undefined);
-      setEditTarget(null); setAddMode(null); await loadAll();
+      setNaturalDraft(null); setEditTarget(null); setAddMode(null); await loadAll();
       return true;
     } catch (e) {
       setOperationError(e instanceof Error ? e.message : '保存に失敗しました');
@@ -420,14 +423,15 @@ export default function Page() {
       const json = await res.json();
       if (!res.ok || !json.entry) throw new Error(json.error || '自然文の解析に失敗しました');
       const entry = json.entry || {};
-      setSaving(false);
       if (!['event', 'todo', 'expense'].includes(entry.type)) throw new Error('追加できる形式として認識できませんでした');
-      let saved = false;
-      if (entry.type === 'event') saved = await saveDoc('event', normalize('event', { ...entry, visibility: 'private', aiReadable: true }));
-      if (entry.type === 'todo') saved = await saveDoc('todo', normalize('todo', { ...entry, visibility: 'private', aiReadable: true }));
-      if (entry.type === 'expense') saved = await saveDoc('expense', normalize('expense', { ...entry, visibility: 'private', aiReadable: true, inputType: 'ai_text' }));
-      if (!saved) return;
-      setChat(c => [...c, { role: 'ai', content: `自然文から${entry.type === 'todo' ? 'ToDo' : entry.type === 'expense' ? '支出' : '予定'}を追加しました。` }]);
+      const draft = { ...entry, visibility: 'private', aiReadable: true, inputType: entry.type === 'expense' ? 'ai_text' : entry.inputType };
+      const draftDate = entry.type === 'event' ? datePart(entry.startAt) : entry.type === 'todo' ? String(entry.dueAt || '').slice(0, 10) : entry.date;
+      if (draftDate) {
+        setSelectedDate(draftDate);
+        setCalendarMonth(draftDate);
+      }
+      setNaturalDraft(draft);
+      setAddMode(entry.type as Exclude<AddMode, null>);
     } catch (e) {
       setOperationError(e instanceof Error ? e.message : '自然文追加に失敗しました');
     } finally {
@@ -557,12 +561,12 @@ function initialFormFor(mode: AddMode, selectedDate: string, item?: Record<strin
   return { ...base, ...item };
 }
 
-function AddModal({ mode, setMode, close, save, user, partnerName, selectedDate, editTarget, saving }: { mode: AddMode; setMode: (m: AddMode) => void; close: () => void; save: (m: AddMode, d: any) => void | Promise<unknown>; user: User; groupId: string; partnerName: string; selectedDate: string; editTarget: EditTarget; saving: boolean }) {
-  const [form, setForm] = useState<Record<string, any>>(() => initialFormFor(mode, selectedDate, editTarget?.data));
+function AddModal({ mode, setMode, close, save, user, partnerName, selectedDate, editTarget, draftData, saving }: { mode: AddMode; setMode: (m: AddMode) => void; close: () => void; save: (m: AddMode, d: any) => void | Promise<unknown>; user: User; groupId: string; partnerName: string; selectedDate: string; editTarget: EditTarget; draftData: Record<string, any> | null; saving: boolean }) {
+  const [form, setForm] = useState<Record<string, any>>(() => initialFormFor(mode, selectedDate, editTarget?.data || draftData || undefined));
   const [receiptBusy, setReceiptBusy] = useState(false); const [aiBusy, setAiBusy] = useState(false); const [aiText, setAiText] = useState('');
   const set = (k: string, v: any) => setForm(f => ({ ...f, [k]: v }));
   async function uploadImage(file: File, folder: string) { const path = `${folder}/${user.uid}/${Date.now()}_${file.name}`; const storageRef = ref(storage, path); await uploadBytes(storageRef, file); return getDownloadURL(storageRef); }
-  return <div className="modal"><div className="panel">{!editTarget && <div className="tabs"><button className={mode === 'diary' ? 'active' : ''} onClick={() => setMode('diary')}>日記</button><button className={mode === 'event' ? 'active' : ''} onClick={() => setMode('event')}>予定</button><button className={mode === 'todo' ? 'active' : ''} onClick={() => setMode('todo')}>ToDo</button><button className={mode === 'expense' ? 'active' : ''} onClick={() => setMode('expense')}>支出</button><button className={mode === 'anniversary' ? 'active' : ''} onClick={() => setMode('anniversary')}>記念日</button><button className={mode === 'note' ? 'active' : ''} onClick={() => setMode('note')}>メモ</button></div>}<h2 className="title">{editTarget ? '編集' : '追加'}</h2>
+  return <div className="modal"><div className="panel">{!editTarget && !draftData && <div className="tabs"><button className={mode === 'diary' ? 'active' : ''} onClick={() => setMode('diary')}>日記</button><button className={mode === 'event' ? 'active' : ''} onClick={() => setMode('event')}>予定</button><button className={mode === 'todo' ? 'active' : ''} onClick={() => setMode('todo')}>ToDo</button><button className={mode === 'expense' ? 'active' : ''} onClick={() => setMode('expense')}>支出</button><button className={mode === 'anniversary' ? 'active' : ''} onClick={() => setMode('anniversary')}>記念日</button><button className={mode === 'note' ? 'active' : ''} onClick={() => setMode('note')}>メモ</button></div>}<h2 className="title">{editTarget ? '編集' : draftData ? 'AI解析結果を確認' : '追加'}</h2>{draftData && <p className="status-text">AIが作った候補です。日時・金額・種別を確認してから保存してください。</p>}
     {mode === 'diary' && <><input className="input" placeholder="タイトル" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.date} onChange={e => set('date', e.target.value)} /><textarea className="textarea" placeholder="内容" value={form.content || ''} onChange={e => set('content', e.target.value)} /><input className="input" placeholder="気分・タグ" value={form.mood || ''} onChange={e => set('mood', e.target.value)} /><input className="input" placeholder="場所名" value={form.locationName || ''} onChange={e => set('locationName', e.target.value)} /><button className="btn secondary" onClick={() => navigator.geolocation?.getCurrentPosition(pos => setForm(f => ({ ...f, lat: pos.coords.latitude, lng: pos.coords.longitude })))}>現在地をセット</button><label>写真</label><input className="input" type="file" accept="image/*" multiple onChange={async e => { const files = Array.from(e.target.files || []) as File[]; const urls: string[] = []; for (const file of files) urls.push(await uploadImage(file, 'diaries')); set('photos', urls); }} /></>}
     {mode === 'event' && <><input className="input" placeholder="予定名" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="datetime-local" value={form.startAt || ''} onChange={e => set('startAt', e.target.value)} /><input className="input" type="datetime-local" value={form.endAt || ''} onChange={e => set('endAt', e.target.value)} /><input className="input" placeholder="場所" value={form.location || ''} onChange={e => set('location', e.target.value)} /><textarea className="textarea" placeholder="説明" value={form.description || ''} onChange={e => set('description', e.target.value)} /><label><input type="checkbox" checked={!!form.reminderEnabled} onChange={e => set('reminderEnabled', e.target.checked)} /> リマインド</label><input className="input" type="datetime-local" value={form.remindAt || ''} onChange={e => set('remindAt', e.target.value)} /></>}
     {mode === 'todo' && <><input className="input" placeholder="ToDo" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.dueAt || selectedDate} onChange={e => set('dueAt', e.target.value)} /><select className="select" value={form.priority} onChange={e => set('priority', e.target.value)}><option value="low">低</option><option value="middle">中</option><option value="high">高</option></select><textarea className="textarea" placeholder="説明" value={form.description || ''} onChange={e => set('description', e.target.value)} /><label><input type="checkbox" checked={!!form.reminderEnabled} onChange={e => set('reminderEnabled', e.target.checked)} /> リマインド</label><input className="input" type="datetime-local" value={form.remindAt || ''} onChange={e => set('remindAt', e.target.value)} /></>}
