@@ -148,12 +148,13 @@ function formatDateTime(value?: string) {
   return d.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 function filterExpenseCategory(q: string, expenses: any[]) {
-  if (/食費|ごはん|ランチ|夕食|朝食|カフェ|飲食/.test(q)) return expenses.filter((e:any)=>e.category === 'food');
-  if (/デート|交際/.test(q)) return expenses.filter((e:any)=>e.category === 'dating');
-  if (/交通|電車|バス|タクシー|Grab/.test(q)) return expenses.filter((e:any)=>e.category === 'transport');
-  if (/旅行|ホテル|航空券/.test(q)) return expenses.filter((e:any)=>e.category === 'travel');
-  if (/医療|病院|薬/.test(q)) return expenses.filter((e:any)=>e.category === 'medical');
-  if (/日用品/.test(q)) return expenses.filter((e:any)=>e.category === 'daily_goods');
+  if (/食費|食事|ごはん|ご飯|ランチ|昼食|夕食|晩ごはん|朝食|カフェ|喫茶|飲食|レストラン|居酒屋|スーパー|食品|食材|コンビニ|セブン|ローソン|ファミマ|スタバ|マック|マクド|GrabFood|Uber Eats|出前/.test(q)) return expenses.filter((e:any)=>e.category === 'food');
+  if (/日用品|生活用品|洗剤|ティッシュ|トイレットペーパー|シャンプー|石鹸|せっけん|歯ブラシ|歯磨き|掃除|雑貨|ドラッグストアの日用品/.test(q)) return expenses.filter((e:any)=>e.category === 'daily_goods');
+  if (/デート|交際|プレゼント|ギフト|記念日|花|彼女|彼氏|パートナー/.test(q)) return expenses.filter((e:any)=>e.category === 'dating');
+  if (/交通|電車|地下鉄|バス|タクシー|Grab|Uber|駐車|高速|ガソリン|Suica|PASMO|切符|運賃|航空券だけ/.test(q)) return expenses.filter((e:any)=>e.category === 'transport');
+  if (/旅行|ホテル|宿泊|航空券|飛行機|新幹線|旅館|Airbnb|観光|ツアー|レンタカー/.test(q)) return expenses.filter((e:any)=>e.category === 'travel');
+  if (/医療|病院|薬|薬局|ドラッグストア|診察|歯医者|クリニック|処方|サプリ|コンタクト/.test(q)) return expenses.filter((e:any)=>e.category === 'medical');
+  if (/娯楽|映画|ゲーム|ライブ|コンサート|イベント|本|漫画|サブスク|Netflix|Spotify|カラオケ|遊び|チケット/.test(q)) return expenses.filter((e:any)=>e.category === 'entertainment');
   return expenses;
 }
 function deterministicAnswer(body: Body) {
