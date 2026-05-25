@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { auth, db, storage } from '@/lib/firebase';
 import { createUserWithEmailAndPassword, onAuthStateChanged, signInWithEmailAndPassword, signOut, updateProfile, type User } from 'firebase/auth';
-import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, updateDoc, where } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, setDoc, updateDoc, where } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { Bell, CalendarDays, CheckSquare, ChevronLeft, ChevronRight, Gift, Home, MessageCircle, NotebookPen, ReceiptText, Settings, StickyNote, Users, Copy, Share2 } from 'lucide-react';
 import { todayIso, toDateTimeLocalValue } from '@/lib/date';
@@ -166,6 +166,52 @@ export default function Page() {
     return () => clearInterval(id);
   }, [user, notificationEnabled, todos, events, anniversaries]);
 
+  useEffect(() => {
+    const uid = user?.uid;
+    if (!uid || !groupId) return;
+    setLoadError('');
+
+    const byDesc = (key: string) => (a: any, b: any) => String(b[key] || '').localeCompare(String(a[key] || ''));
+    const byAsc = (key: string) => (a: any, b: any) => String(a[key] || '').localeCompare(String(b[key] || ''));
+    const handleSyncError = (e: unknown) => setLoadError(e instanceof Error ? e.message : '共有データの自動同期に失敗しました');
+    const subscribeScoped = <T extends { id: string }>(col: string, setItems: (items: T[]) => void, sortItems: (a: T, b: T) => number) => {
+      let own: T[] = [];
+      let shared: T[] = [];
+      let ownLoaded = false;
+      let sharedLoaded = false;
+      const publish = () => {
+        if (!ownLoaded || !sharedLoaded) return;
+        setItems(mergeDocs(own, shared).sort(sortItems));
+      };
+      const ownUnsub = onSnapshot(
+        query(collection(db, col), where('userId', '==', uid), where('groupId', '==', groupId)),
+        snap => { own = snap.docs.map(v => ({ id: v.id, ...v.data() } as T)); ownLoaded = true; publish(); },
+        handleSyncError
+      );
+      const sharedUnsub = onSnapshot(
+        query(collection(db, col), where('groupId', '==', groupId), where('visibility', '==', 'shared')),
+        snap => { shared = snap.docs.map(v => ({ id: v.id, ...v.data() } as T)); sharedLoaded = true; publish(); },
+        handleSyncError
+      );
+      return () => { ownUnsub(); sharedUnsub(); };
+    };
+
+    const unsubs = [
+      subscribeScoped<Diary>('diaries', setDiaries, byDesc('date')),
+      subscribeScoped<EventItem>('events', setEvents, byAsc('startAt')),
+      subscribeScoped<Todo>('todos', setTodos, byDesc('createdAt')),
+      subscribeScoped<Expense>('expenses', setExpenses, byDesc('date')),
+      subscribeScoped<Anniversary>('anniversaries', setAnniversaries, byAsc('date')),
+      onSnapshot(
+        query(collection(db, 'sharedNotes'), where('groupId', '==', groupId)),
+        snap => setSharedNotes(snap.docs.map(v => ({ id: v.id, ...v.data() } as SharedNote)).sort(byDesc('createdAt'))),
+        handleSyncError
+      )
+    ];
+
+    return () => unsubs.forEach(unsub => unsub());
+  }, [user?.uid, groupId]);
+
   async function loadAll(uid = user?.uid, gid = groupId) {
     if (!uid || !gid) return;
     setDataLoading(true);
@@ -279,6 +325,21 @@ export default function Page() {
     {addMode && <AddModal mode={addMode} setMode={setAddMode} close={() => { setNaturalDraft(null); setEditTarget(null); setAddMode(null); }} save={saveDoc} user={user} groupId={groupId} partnerName={partnerName} selectedDate={selectedDate} editTarget={editTarget} draftData={naturalDraft} saving={saving} />}
   </div>;
 
+  async function syncSearchIndex(type: AddMode | string, id: string, item: Record<string, any>) {
+    if (!user) return;
+    const shouldSync = type === 'note' || item.aiReadable !== false;
+    const body = shouldSync ? toRagItem(type, id, item) : { type: type === 'note' ? 'sharedNote' : type, id };
+    const res = await fetch(shouldSync ? '/api/rag/sync' : '/api/rag/delete', {
+      method: 'POST',
+      headers: await authedHeaders(user),
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}));
+      throw new Error(json.error || 'AI検索への同期に失敗しました');
+    }
+  }
+
   async function remove(type: string, id: string) {
     if (saving) return;
     if (!confirm('削除しますか？')) return;
@@ -288,9 +349,9 @@ export default function Page() {
     try {
       const map: Record<string, string> = { diary: 'diaries', event: 'events', todo: 'todos', expense: 'expenses', anniversary: 'anniversaries', note: 'sharedNotes' };
       await deleteDoc(doc(db, map[type], id));
-      fetch('/api/rag/delete', { method: 'POST', headers: await authedHeaders(user!), body: JSON.stringify({ type: type === 'note' ? 'sharedNote' : type, id }) }).catch(() => undefined);
+      const res = await fetch('/api/rag/delete', { method: 'POST', headers: await authedHeaders(user!), body: JSON.stringify({ type: type === 'note' ? 'sharedNote' : type, id }) });
+      if (!res.ok) throw new Error('データは削除しましたが、AI検索からの削除同期に失敗しました');
       if (editTarget?.id === id) setEditTarget(null);
-      await loadAll();
     } catch (e) {
       setOperationError(e instanceof Error ? e.message : '削除に失敗しました');
     } finally {
@@ -298,7 +359,11 @@ export default function Page() {
       setSaving(false);
     }
   }
-  async function toggleTodo(todo: Todo) { await updateDoc(doc(db, 'todos', todo.id), { status: todo.status === 'done' ? 'open' : 'done', updatedAt: new Date().toISOString() }); await loadAll(); }
+  async function toggleTodo(todo: Todo) {
+    const updated = { ...todo, status: todo.status === 'done' ? 'open' : 'done', updatedAt: new Date().toISOString() } as Todo;
+    await updateDoc(doc(db, 'todos', todo.id), { status: updated.status, updatedAt: updated.updatedAt });
+    await syncSearchIndex('todo', todo.id, updated);
+  }
   async function saveGroupId(v: string) {
     if (!user) return;
     const nextGroupId = v.trim();
@@ -395,11 +460,12 @@ export default function Page() {
         if (target) { savedId = target.id; await updateDoc(doc(db, map[type], savedId), savedPayload); }
         else { const refDoc = await addDoc(collection(db, map[type]), savedPayload); savedId = refDoc.id; }
       }
-      const ragPayload = toRagItem(type, savedId, savedPayload);
-      const shouldSync = type === 'note' || savedPayload.aiReadable !== false;
-      const deletePayload = { type, id: savedId };
-      fetch(shouldSync ? '/api/rag/sync' : '/api/rag/delete', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify(shouldSync ? ragPayload : deletePayload) }).catch(() => undefined);
-      setNaturalDraft(null); setEditTarget(null); setAddMode(null); await loadAll();
+      try {
+        await syncSearchIndex(type, savedId, savedPayload);
+      } catch (e) {
+        setOperationError(e instanceof Error ? `保存しましたが、${e.message}` : '保存しましたが、AI検索への同期に失敗しました');
+      }
+      setNaturalDraft(null); setEditTarget(null); setAddMode(null);
       return true;
     } catch (e) {
       setOperationError(e instanceof Error ? e.message : '保存に失敗しました');
