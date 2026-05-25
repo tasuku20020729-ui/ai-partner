@@ -46,6 +46,11 @@ const addMonths = (isoDate: string, months: number) => {
 const dateFromMonthDay = (monthIso: string, day: number) => `${monthIso.slice(0, 7)}-${String(day).padStart(2, '0')}`;
 const dateTimeOnDate = (date: string, time = '09:00') => `${date}T${time}`;
 const inviteCode = () => `PAIR-${Math.random().toString(36).slice(2, 6).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+const partnerFieldValue = (value: unknown, configured?: unknown) => {
+  if (typeof value !== 'string') return '';
+  if (value === '彼女' && configured !== true && configured !== 'true') return '';
+  return value;
+};
 const toDateTimeLocal = (value?: string) => {
   if (!value) return '';
   const d = new Date(value);
@@ -110,8 +115,8 @@ export default function Page() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [groupId, setGroupId] = useState('');
-  const [partnerName, setPartnerName] = useState('彼女');
-  const [partnerRelationship, setPartnerRelationship] = useState('彼女');
+  const [partnerName, setPartnerName] = useState('');
+  const [partnerRelationship, setPartnerRelationship] = useState('');
   const [dataLoading, setDataLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [diaries, setDiaries] = useState<Diary[]>([]);
@@ -120,7 +125,7 @@ export default function Page() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [anniversaries, setAnniversaries] = useState<Anniversary[]>([]);
   const [sharedNotes, setSharedNotes] = useState<SharedNote[]>([]);
-  const [chat, setChat] = useState<ChatMessage[]>([{ role: 'ai', content: '日記・予定・ToDo・支出・記念日・共有メモを横断検索できます。例:「彼女の明後日の予定は？」「今週の課題は？」「先週いくら使った？」' }]);
+  const [chat, setChat] = useState<ChatMessage[]>([{ role: 'ai', content: '日記・予定・ToDo・支出・記念日・共有メモを横断検索できます。例:「明後日の予定は？」「今週の課題は？」「先週いくら使った？」' }]);
   const [question, setQuestion] = useState('');
   const [saving, setSaving] = useState(false);
   const [operationMessage, setOperationMessage] = useState('');
@@ -144,12 +149,16 @@ export default function Page() {
         const gid = savedGroupId || cachedGroupId || newGroupId(u.uid);
         const savedPartnerName = userSnap.data()?.partnerName;
         const savedPartnerRelationship = userSnap.data()?.partnerRelationship;
+        const savedPartnerProfileConfigured = userSnap.data()?.partnerProfileConfigured;
+        const cachedPartnerProfileConfigured = localStorage.getItem(`partnerProfileConfigured_${u.uid}`);
         setGroupId(gid);
         localStorage.setItem(`groupId_${u.uid}`, gid);
-        setPartnerName(savedPartnerName || localStorage.getItem(`partnerName_${u.uid}`) || '彼女');
-        setPartnerRelationship(savedPartnerRelationship || localStorage.getItem(`partnerRelationship_${u.uid}`) || '彼女');
+        const nextPartnerName = partnerFieldValue(savedPartnerName || localStorage.getItem(`partnerName_${u.uid}`), savedPartnerProfileConfigured || cachedPartnerProfileConfigured);
+        const nextPartnerRelationship = partnerFieldValue(savedPartnerRelationship || localStorage.getItem(`partnerRelationship_${u.uid}`), savedPartnerProfileConfigured || cachedPartnerProfileConfigured);
+        setPartnerName(nextPartnerName);
+        setPartnerRelationship(nextPartnerRelationship);
         setNotificationEnabled(localStorage.getItem(`notify_${u.uid}`) === 'on');
-        await setDoc(userRef, { name: u.displayName || u.email || 'User', email: u.email, defaultCurrency: 'JPY', groupId: gid, partnerName: savedPartnerName || localStorage.getItem(`partnerName_${u.uid}`) || '彼女', partnerRelationship: savedPartnerRelationship || localStorage.getItem(`partnerRelationship_${u.uid}`) || '彼女', updatedAt: new Date().toISOString() }, { merge: true });
+        await setDoc(userRef, { name: u.displayName || u.email || 'User', email: u.email, defaultCurrency: 'JPY', groupId: gid, partnerName: nextPartnerName, partnerRelationship: nextPartnerRelationship, partnerProfileConfigured: Boolean(nextPartnerName || nextPartnerRelationship), updatedAt: new Date().toISOString() }, { merge: true });
         await loadAll(u.uid, gid);
       }
     } catch (e) {
@@ -384,14 +393,15 @@ export default function Page() {
   }
   async function savePartnerProfile(name: string, relationship: string) {
     if (!user) return;
-    const nextName = name.trim() || '彼女';
-    const nextRelationship = relationship.trim() || '彼女';
+    const nextName = name.trim();
+    const nextRelationship = relationship.trim();
     setPartnerName(nextName);
     setPartnerRelationship(nextRelationship);
     localStorage.setItem(`partnerName_${user.uid}`, nextName);
     localStorage.setItem(`partnerRelationship_${user.uid}`, nextRelationship);
+    localStorage.setItem(`partnerProfileConfigured_${user.uid}`, nextName || nextRelationship ? 'true' : 'false');
     try {
-      await setDoc(doc(db, 'users', user.uid), { partnerName: nextName, partnerRelationship: nextRelationship, updatedAt: new Date().toISOString() }, { merge: true });
+      await setDoc(doc(db, 'users', user.uid), { partnerName: nextName, partnerRelationship: nextRelationship, partnerProfileConfigured: Boolean(nextName || nextRelationship), updatedAt: new Date().toISOString() }, { merge: true });
     } catch (e) {
       alert(e instanceof Error ? e.message : '相手情報の保存に失敗しました');
     }
@@ -633,7 +643,7 @@ function CalendarView({ events, anniversaries, currentUserId, onDelete, setAddMo
 function TodoView({ todos, currentUserId, toggleTodo, onEdit, onDelete }: any) { return <Section title="ToDo">{todos.map((t: Todo) => <article className="card" key={t.id}><label className="row"><span><input type="checkbox" checked={t.status === 'done'} disabled={t.userId !== currentUserId} onChange={() => toggleTodo(t)} /> <b className={t.status === 'done' ? 'done' : ''}>{t.title}</b></span><span>{t.priority}</span></label><p className="muted">期限: {t.dueAt || '-'} / {t.ownerName}</p>{t.remindAt && <p className="muted">リマインド: {new Date(t.remindAt).toLocaleString('ja-JP')}</p>}<p>{t.description}</p>{t.userId === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('todo', t)}>編集</button><button className="link" onClick={() => onDelete('todo', t.id)}>削除</button></div>}</article>)}</Section>; }
 function ExpenseView({ expenses, currentUserId, onEdit, onDelete, setAddMode }: any) { const total = expenses.reduce((s: number, e: Expense) => s + Number(e.amountBase || 0), 0); return <Section title="支出"><button className="btn" onClick={() => setAddMode('expense')}>支出を追加</button><div className="card"><h3>合計</h3><div className="big">{yen(total)}</div></div>{expenses.map((e: Expense) => <article className="card" key={e.id}><div className="row"><b>{e.title}</b><span>{e.amount.toLocaleString()} {e.currency}</span></div><p className="muted">{e.date} / {categoryLabel[e.category]} / {e.ownerName}</p><p>{e.memo}</p>{e.receiptImageUrl && <img className="photo" src={e.receiptImageUrl} alt="receipt" />}{e.userId === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('expense', e)}>編集</button><button className="link" onClick={() => onDelete('expense', e.id)}>削除</button></div>}</article>)}</Section>; }
 function NotesView({ notes, currentUserId, onEdit, onDelete, setAddMode }: any) { return <Section title="共有メモ"><button className="btn" onClick={() => setAddMode('note')}>共有メモ追加</button>{notes.map((n: SharedNote) => <article className="card" key={n.id}><b>{n.title}</b><p className="muted">{n.createdByName}</p><p>{n.content}</p>{n.createdBy === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('note', n)}>編集</button><button className="link" onClick={() => onDelete('note', n.id)}>削除</button></div>}</article>)}</Section>; }
-function AIView({ chat, question, setQuestion, ask, saving }: any) { return <Section title="AIチャット"><div className="chat">{chat.map((m: ChatMessage, i: number) => <div key={i} className={`bubble ${m.role}`}>{m.content}</div>)}</div><div className="compose"><input className="input" placeholder="例: 彼女の明後日の予定は？" value={question} disabled={saving} onChange={e => setQuestion(e.target.value)} onKeyDown={e => e.key === 'Enter' && !saving && ask()} /><button className="btn" disabled={saving || !question.trim()} onClick={ask}>{saving ? '回答中...' : '質問'}</button></div></Section>; }
+function AIView({ chat, question, setQuestion, ask, saving }: any) { return <Section title="AIチャット"><div className="chat">{chat.map((m: ChatMessage, i: number) => <div key={i} className={`bubble ${m.role}`}>{m.content}</div>)}</div><div className="compose"><input className="input" placeholder="例: 明後日の予定は？" value={question} disabled={saving} onChange={e => setQuestion(e.target.value)} onKeyDown={e => e.key === 'Enter' && !saving && ask()} /><button className="btn" disabled={saving || !question.trim()} onClick={ask}>{saving ? '回答中...' : '質問'}</button></div></Section>; }
 
 function ShareBadge({ item, currentUserId }: { item: { userId?: string; visibility?: Visibility; ownerName?: string }; currentUserId: string }) {
   if (item.userId && item.userId !== currentUserId) return <span className="share-badge partner">{item.ownerName || '相手'}</span>;
@@ -648,13 +658,18 @@ function SettingsView({ user, groupId, setGroupId, partnerName, partnerRelations
   useEffect(() => setPartnerNameDraft(partnerName), [partnerName]);
   useEffect(() => setPartnerRelationshipDraft(partnerRelationship), [partnerRelationship]);
   const createInvite = () => setGroupId(inviteCode());
-  const copyCode = async () => { await navigator.clipboard?.writeText(groupId); alert('招待コードをコピーしました'); };
+  const isSharing = Boolean(groupId && groupId !== newGroupId(user.uid));
+  const displayInviteCode = isSharing ? groupId : '';
+  const copyCode = async () => {
+    if (!displayInviteCode) return alert('先に招待コードを作成してください');
+    await navigator.clipboard?.writeText(displayInviteCode);
+    alert('招待コードをコピーしました');
+  };
   const joinShare = () => {
     const code = joinCode.trim();
     if (!code) return alert('招待コードを入力してください');
     setGroupId(code);
   };
-  const isSharing = Boolean(groupId && groupId !== newGroupId(user.uid));
   const leaveShare = () => {
     if (!confirm('共有を解除しますか？自分のデータは消えませんが、相手の共有データは表示されなくなります。')) return;
     setGroupId(newGroupId(user.uid));
@@ -664,13 +679,13 @@ function SettingsView({ user, groupId, setGroupId, partnerName, partnerRelations
       <div><p className="eyebrow">共有状態</p><h3>{isSharing ? `共有中: ${partnerName || '未設定'}（${partnerRelationship || '相手'}）` : '未共有'}</h3><p className="muted">共有データ {sharedStats.sharedCount}件 / 相手の共有データ {sharedStats.partnerCount}件 / メモ {sharedStats.notesCount}件</p></div>
       <button className="btn secondary" onClick={reload}>再読み込み</button>
     </div>
-    <div className="card share-card"><h3><Share2 size={18}/> 相手を招待する</h3><p className="muted">このコードを相手に送ると、同じ共有スペースに参加できます。</p><label>招待コード</label><input className="input code-input" readOnly value={groupId} /><div className="grid"><button className="btn secondary" onClick={createInvite}><Share2 size={16}/> 新しいコードを作成</button><button className="btn secondary" onClick={copyCode}><Copy size={16}/> コピー</button></div></div>
+    <div className="card share-card"><h3><Share2 size={18}/> 相手を招待する</h3><p className="muted">初期状態は共有なしです。共有したい時だけ招待コードを作成してください。</p><label>招待コード</label><input className="input code-input" readOnly value={displayInviteCode} placeholder="未共有" /><div className="grid"><button className="btn secondary" onClick={createInvite}><Share2 size={16}/> 新しいコードを作成</button><button className="btn secondary" disabled={!displayInviteCode} onClick={copyCode}><Copy size={16}/> コピー</button></div></div>
     <div className="card share-card"><h3><Users size={18}/> 招待コードで参加する</h3><p className="muted">相手から受け取った招待コードを入力します。入力後、共有データを再読み込みします。</p><input className="input code-input" value={joinCode} onChange={e => setJoinCode(e.target.value)} placeholder="例: PAIR-7K3Q-A9FM" /><button className="btn" onClick={joinShare}>参加する</button></div>
-    <div className="card share-card"><h3>相手情報</h3><p className="muted">AIへの質問で使う名前と関係性です。例: 「さきの予定」「妻の支出」</p><input className="input" value={partnerNameDraft} onChange={e => setPartnerNameDraft(e.target.value)} placeholder="相手の名前（例: さき）" /><input className="input" value={partnerRelationshipDraft} onChange={e => setPartnerRelationshipDraft(e.target.value)} placeholder="関係性（例: 彼女、妻、夫、恋人）" /><button className="btn secondary" onClick={() => savePartnerProfile(partnerNameDraft, partnerRelationshipDraft)}>相手情報を保存</button></div>
+    <div className="card share-card"><h3>相手情報</h3><p className="muted">AIへの質問で使う名前と関係性です。例: 「さきの予定」「家族の支出」</p><input className="input" value={partnerNameDraft} onChange={e => setPartnerNameDraft(e.target.value)} placeholder="相手の名前（例: さき）" /><input className="input" value={partnerRelationshipDraft} onChange={e => setPartnerRelationshipDraft(e.target.value)} placeholder="関係性（例: 家族、友人、パートナー）" /><button className="btn secondary" onClick={() => savePartnerProfile(partnerNameDraft, partnerRelationshipDraft)}>相手情報を保存</button></div>
     <div className="card"><h3><Bell size={18}/> 通知</h3><label><input type="checkbox" checked={notificationEnabled} onChange={e => setNotificationEnabled(e.target.checked)} /> アプリ起動中の通知チェックを有効化</label><button className="btn" onClick={enablePush}>PWA Push通知を有効化</button><p className="muted">状態: {pushStatus}</p><p className="muted">iPhoneはSafariで開く → 共有 → ホーム画面に追加 → 追加したアイコンから開いて通知許可、の順に設定してください。</p></div>
     <div className="card"><h3>AI検索</h3><p className="muted">AIの検索結果が古い、または登録した内容が見つからない時だけ修復してください。</p><button className="btn secondary" disabled={saving} onClick={repairSearchIndex}>{saving ? '修復中...' : 'AI検索を修復'}</button></div>
-    <button className="btn danger full" disabled={!isSharing} onClick={leaveShare}>共有を解除</button>
-    <button className="btn danger full" onClick={() => signOut(auth)}>ログアウト</button><p className="muted">ログイン: {user.email}</p>
+    <div className="danger-zone"><button className="btn danger full" disabled={!isSharing} onClick={leaveShare}>共有を解除</button></div>
+    <div className="account-zone"><button className="btn danger full" onClick={() => signOut(auth)}>ログアウト</button><p className="muted">ログイン: {user.email}</p></div>
   </Section>; }
 function Section({ title, children }: any) { return <><h2 className="title">{title}</h2>{children}</>; }
 function BottomNav({ tab, setTab }: any) { const items = [['home', Home, 'ホーム'], ['ai', MessageCircle, 'AI'], ['notes', StickyNote, 'メモ'], ['settings', Settings, '設定']] as const; return <nav className="bottom compact">{items.map(([key, Icon, label]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}><Icon size={18} /><span>{label}</span></button>)}</nav>; }
@@ -699,7 +714,7 @@ function AddModal({ mode, setMode, close, save, user, partnerName, selectedDate,
     {mode === 'expense' && <><div className="card" style={{ boxShadow: 'none' }}><h3>AI自然文入力</h3><input className="input" placeholder="例: 昨日Grabで35リンギット使った" value={aiText} disabled={aiBusy || saving} onChange={e => setAiText(e.target.value)} /><button className="btn secondary" disabled={!aiText.trim() || aiBusy || saving} onClick={async () => { setAiBusy(true); try { const res = await fetch('/api/ai/natural-entry', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify({ text: aiText }) }); const json = await res.json(); if (!res.ok || !json.entry) throw new Error(json.error || 'AI入力に失敗しました'); setForm(f => ({ ...f, ...json.entry, inputType: 'ai_text' })); } catch (err) { alert(err instanceof Error ? err.message : 'AI入力に失敗しました'); } finally { setAiBusy(false); } }}>{aiBusy ? '解析中...' : 'AIで入力'}</button></div><label>レシート写真</label><input className="input" type="file" accept="image/*" disabled={receiptBusy || saving} onChange={async e => { const file = e.target.files?.[0]; if (!file) return; setReceiptBusy(true); try { const url = await uploadImage(file, 'receipts'); const res = await fetch('/api/ai/receipt', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify({ imageUrl: url }) }); const json = await res.json(); if (!res.ok || !json.expense) throw new Error(json.error || 'レシート解析に失敗しました'); setForm(f => ({ ...f, ...json.expense, receiptImageUrl: url, inputType: 'receipt' })); } catch (err) { alert(err instanceof Error ? err.message : 'レシート解析に失敗しました'); } finally { setReceiptBusy(false); } }} />{receiptBusy && <p className="muted">レシート解析中...</p>}<input className="input" placeholder="タイトル" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.date} onChange={e => set('date', e.target.value)} /><input className="input" type="number" placeholder="金額" value={form.amount || ''} onChange={e => set('amount', e.target.value)} /><select className="select" value={form.currency} onChange={e => set('currency', e.target.value)}><option value="JPY">JPY</option><option value="MYR">MYR</option><option value="USD">USD</option></select><select className="select" value={form.category} onChange={e => set('category', e.target.value)}>{categories.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}</select><input className="input" placeholder="店名" value={form.shopName || ''} onChange={e => set('shopName', e.target.value)} /><textarea className="textarea" placeholder="メモ" value={form.memo || ''} onChange={e => set('memo', e.target.value)} /></>}
     {mode === 'anniversary' && <><input className="input" placeholder="記念日名" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.date} onChange={e => set('date', e.target.value)} /><select className="select" value={form.repeat} onChange={e => set('repeat', e.target.value)}><option value="yearly">毎年</option><option value="none">一回だけ</option></select></>}
     {mode === 'note' && <><input className="input" placeholder="メモタイトル" value={form.title || ''} onChange={e => set('title', e.target.value)} /><textarea className="textarea" placeholder="共有メモ内容" value={form.content || ''} onChange={e => set('content', e.target.value)} /></>}
-    {mode !== 'note' && <><select className="select" value={form.visibility} onChange={e => set('visibility', e.target.value)}><option value="private">自分だけ</option><option value="shared">共有</option></select><label><input type="checkbox" checked={form.aiReadable} onChange={e => set('aiReadable', e.target.checked)} /> AI参照を許可</label></>}<div className="grid" style={{ marginTop: 14 }}><button className="btn secondary" disabled={saving} onClick={close}>閉じる</button><button className="btn" disabled={saving || receiptBusy || aiBusy} onClick={() => save(mode, normalize(mode, form))}>{saving ? '処理中...' : editTarget ? '更新' : '保存'}</button></div><p className="muted">共有設定にすると、同じ共有IDの相手がAIで参照できます。相手の呼び名: {partnerName}</p></div></div>;
+    {mode !== 'note' && <><select className="select" value={form.visibility} onChange={e => set('visibility', e.target.value)}><option value="private">自分だけ</option><option value="shared">共有</option></select><label><input type="checkbox" checked={form.aiReadable} onChange={e => set('aiReadable', e.target.checked)} /> AI参照を許可</label></>}<div className="grid" style={{ marginTop: 14 }}><button className="btn secondary" disabled={saving} onClick={close}>閉じる</button><button className="btn" disabled={saving || receiptBusy || aiBusy} onClick={() => save(mode, normalize(mode, form))}>{saving ? '処理中...' : editTarget ? '更新' : '保存'}</button></div><p className="muted">共有設定にすると、同じ共有IDの相手がAIで参照できます。相手の呼び名: {partnerName || '未設定'}</p></div></div>;
 }
 function normalize(mode: AddMode, f: Record<string, any>) { if (mode === 'diary') { const { location, locationName, lat, lng, ...diary } = f; return { ...diary, tags: f.mood ? [f.mood] : [] }; } if (mode === 'event') return { ...f, startAt: new Date(f.startAt).toISOString(), endAt: f.endAt ? new Date(f.endAt).toISOString() : '', remindAt: f.remindAt ? new Date(f.remindAt).toISOString() : '' }; if (mode === 'expense') return { ...f, amount: Number(f.amount || 0), title: f.title || '支出', date: f.date || todayIso(), category: f.category || 'other', currency: f.currency || 'JPY' }; if (mode === 'todo') return { ...f, status: f.status || 'open', priority: f.priority || 'middle', remindAt: f.remindAt ? new Date(f.remindAt).toISOString() : '' }; return f; }
 
