@@ -291,6 +291,29 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   font-size: 12px;
   line-height: 1.35;
 }
+.day-item .share-badge {
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  max-width: 100%;
+  margin: 5px 0 2px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.share-badge.partner {
+  color: #1d4ed8;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+}
+.share-badge.shared {
+  color: #047857;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+}
 .day-item.is-done b {
   color: var(--muted);
   text-decoration: line-through;
@@ -320,6 +343,42 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   justify-content: space-between;
   gap: 12px;
   background: linear-gradient(135deg, #ffffff 0%, #eff6ff 100%);
+}
+.share-status-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px;
+  margin-bottom: 14px;
+  border: 1px solid #99f6e4;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #f0fdfa 0%, #ffffff 100%);
+  box-shadow: var(--shadow);
+}
+.share-status-card h3 {
+  margin: 0 0 4px;
+  font-size: 17px;
+  overflow-wrap: anywhere;
+}
+.share-status-card .btn {
+  flex: 0 0 auto;
+}
+.share-card h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.share-card label {
+  display: block;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+.code-input {
+  font-weight: 950;
+  letter-spacing: 0.08em;
 }
 .add-entry-card { background: linear-gradient(135deg, #ffffff 0%, #f0fdf4 100%); }
 .notice-card h3, .card h3 { margin: 0 0 6px; font-size: 17px; }
@@ -543,6 +602,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   .bottom span { display: none; }
   .bottom { grid-template-columns: repeat(8, 1fr); }
   .bottom.compact { grid-template-columns: repeat(4, 1fr); }
-  .notice-card { align-items: stretch; flex-direction: column; }
+  .notice-card, .share-status-card { align-items: stretch; flex-direction: column; }
   .notice-card .btn { width: 100%; }
+  .share-status-card .btn { width: 100%; }
 }

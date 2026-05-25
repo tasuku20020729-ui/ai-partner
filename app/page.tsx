@@ -45,6 +45,7 @@ const addMonths = (isoDate: string, months: number) => {
 };
 const dateFromMonthDay = (monthIso: string, day: number) => `${monthIso.slice(0, 7)}-${String(day).padStart(2, '0')}`;
 const dateTimeOnDate = (date: string, time = '09:00') => `${date}T${time}`;
+const inviteCode = () => `PAIR-${Math.random().toString(36).slice(2, 6).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 const toDateTimeLocal = (value?: string) => {
   if (!value) return '';
   const d = new Date(value);
@@ -218,6 +219,15 @@ export default function Page() {
   }, [diaries, events, todos, expenses, anniversaries, sharedNotes, user?.uid]);
 
   const monthExpense = expenses.filter(e => e.date?.startsWith(todayIso().slice(0, 7))).reduce((s, e) => s + Number(e.amountBase || 0), 0);
+  const sharedStats = useMemo(() => {
+    const sharedItems = [...diaries, ...events, ...todos, ...expenses, ...anniversaries].filter((item: any) => item.visibility === 'shared');
+    const partnerItems = sharedItems.filter((item: any) => item.userId !== user?.uid);
+    return {
+      sharedCount: sharedItems.length + sharedNotes.length,
+      partnerCount: partnerItems.length,
+      notesCount: sharedNotes.length
+    };
+  }, [diaries, events, todos, expenses, anniversaries, sharedNotes, user?.uid]);
   const openTodos = todos.filter(t => t.status === 'open');
   const todayEvents = events.filter(e => datePart(e.startAt) === todayIso());
   const memoryCards = buildMemoryCards(diaries, expenses, events, anniversaries);
@@ -262,7 +272,7 @@ export default function Page() {
       {tab === 'expense' && <ExpenseView expenses={expenses} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} setAddMode={setAddMode} />}
       {tab === 'ai' && <AIView chat={chat} question={question} setQuestion={setQuestion} ask={askAI} saving={saving} />}
       {tab === 'notes' && <NotesView notes={sharedNotes} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} setAddMode={setAddMode} />}
-      {tab === 'settings' && <SettingsView user={user} groupId={groupId} setGroupId={saveGroupId} partnerName={partnerName} partnerRelationship={partnerRelationship} savePartnerProfile={savePartnerProfile} reload={() => loadAll()} notificationEnabled={notificationEnabled} setNotificationEnabled={enableNotifications} pushStatus={pushStatus} enablePush={enablePushNotifications} repairSearchIndex={repairSearchIndex} saving={saving} />}
+      {tab === 'settings' && <SettingsView user={user} groupId={groupId} setGroupId={saveGroupId} partnerName={partnerName} partnerRelationship={partnerRelationship} savePartnerProfile={savePartnerProfile} reload={() => loadAll()} notificationEnabled={notificationEnabled} setNotificationEnabled={enableNotifications} pushStatus={pushStatus} enablePush={enablePushNotifications} repairSearchIndex={repairSearchIndex} saving={saving} sharedStats={sharedStats} />}
     </main>
     <BottomNav tab={tab} setTab={setTab} />
     {datePickerOpen && <DateActionSheet selectedDate={selectedDate} close={() => setDatePickerOpen(false)} openAdd={openAddForDate} />}
@@ -532,11 +542,11 @@ function CalendarHomeView({ selectedDate, setSelectedDate, chooseDate, calendarM
         <span><b>{selectedExpenses.length}</b>支出</span>
       </div>
       <div className="day-list">
-        {selectedAnniversaries.length > 0 && <div className="day-group"><h4><Gift size={15} />記念日</h4>{selectedAnniversaries.map((a: Anniversary) => <article className="day-item" key={a.id}><div><b>{a.title}</b><span>{a.repeat === 'yearly' ? '毎年' : '一回'}</span></div>{a.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('anniversary', a)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('anniversary', a.id)}>削除</button></span>}</article>)}</div>}
-        {selectedEvents.length > 0 && <div className="day-group"><h4><CalendarDays size={15} />予定</h4>{selectedEvents.map((e: EventItem) => <article className="day-item" key={e.id}><div><b>{e.title}</b><span>{new Date(e.startAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}{e.location ? ` / ${e.location}` : ''}</span></div>{e.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('event', e)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('event', e.id)}>削除</button></span>}</article>)}</div>}
-        {selectedTodos.length > 0 && <div className="day-group"><h4><CheckSquare size={15} />ToDo</h4>{selectedTodos.map((t: Todo) => <article className={`day-item ${t.status === 'done' ? 'is-done' : ''}`} key={t.id}><div><b>{t.title}</b><span>{t.status === 'done' ? '完了' : '未完了'} / 優先度{priorityLabel[t.priority]}</span></div>{t.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('todo', t)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('todo', t.id)}>削除</button></span>}</article>)}</div>}
-        {selectedExpenses.length > 0 && <div className="day-group"><h4><ReceiptText size={15} />支出 <span>{yen(selectedTotal)}</span></h4>{selectedExpenses.map((e: Expense) => <article className="day-item" key={e.id}><div><b>{e.title}</b><span>{categoryLabel[e.category]} / {yen(Number(e.amountBase || 0))}</span></div>{e.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('expense', e)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('expense', e.id)}>削除</button></span>}</article>)}</div>}
-        {selectedDiaries.length > 0 && <div className="day-group"><h4><NotebookPen size={15} />日記</h4>{selectedDiaries.map((d: Diary) => <article className="day-item" key={d.id}><div><b>{d.title}</b><span>{d.mood || d.ownerName}</span></div>{d.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('diary', d)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('diary', d.id)}>削除</button></span>}</article>)}</div>}
+        {selectedAnniversaries.length > 0 && <div className="day-group"><h4><Gift size={15} />記念日</h4>{selectedAnniversaries.map((a: Anniversary) => <article className="day-item" key={a.id}><div><b>{a.title}</b><ShareBadge item={a} currentUserId={currentUserId} /><span>{a.repeat === 'yearly' ? '毎年' : '一回'}</span></div>{a.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('anniversary', a)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('anniversary', a.id)}>削除</button></span>}</article>)}</div>}
+        {selectedEvents.length > 0 && <div className="day-group"><h4><CalendarDays size={15} />予定</h4>{selectedEvents.map((e: EventItem) => <article className="day-item" key={e.id}><div><b>{e.title}</b><ShareBadge item={e} currentUserId={currentUserId} /><span>{new Date(e.startAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}{e.location ? ` / ${e.location}` : ''}</span></div>{e.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('event', e)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('event', e.id)}>削除</button></span>}</article>)}</div>}
+        {selectedTodos.length > 0 && <div className="day-group"><h4><CheckSquare size={15} />ToDo</h4>{selectedTodos.map((t: Todo) => <article className={`day-item ${t.status === 'done' ? 'is-done' : ''}`} key={t.id}><div><b>{t.title}</b><ShareBadge item={t} currentUserId={currentUserId} /><span>{t.status === 'done' ? '完了' : '未完了'} / 優先度{priorityLabel[t.priority]}</span></div>{t.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('todo', t)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('todo', t.id)}>削除</button></span>}</article>)}</div>}
+        {selectedExpenses.length > 0 && <div className="day-group"><h4><ReceiptText size={15} />支出 <span>{yen(selectedTotal)}</span></h4>{selectedExpenses.map((e: Expense) => <article className="day-item" key={e.id}><div><b>{e.title}</b><ShareBadge item={e} currentUserId={currentUserId} /><span>{categoryLabel[e.category]} / {yen(Number(e.amountBase || 0))}</span></div>{e.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('expense', e)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('expense', e.id)}>削除</button></span>}</article>)}</div>}
+        {selectedDiaries.length > 0 && <div className="day-group"><h4><NotebookPen size={15} />日記</h4>{selectedDiaries.map((d: Diary) => <article className="day-item" key={d.id}><div><b>{d.title}</b><ShareBadge item={d} currentUserId={currentUserId} /><span>{d.mood || d.ownerName}</span></div>{d.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('diary', d)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('diary', d.id)}>削除</button></span>}</article>)}</div>}
         {!hasSelectedItems && <p className="muted">この日の予定・ToDo・日記はまだありません。</p>}
       </div>
     </section>
@@ -558,16 +568,44 @@ function TodoView({ todos, currentUserId, toggleTodo, onEdit, onDelete }: any) {
 function ExpenseView({ expenses, currentUserId, onEdit, onDelete, setAddMode }: any) { const total = expenses.reduce((s: number, e: Expense) => s + Number(e.amountBase || 0), 0); return <Section title="支出"><button className="btn" onClick={() => setAddMode('expense')}>支出を追加</button><div className="card"><h3>合計</h3><div className="big">{yen(total)}</div></div>{expenses.map((e: Expense) => <article className="card" key={e.id}><div className="row"><b>{e.title}</b><span>{e.amount.toLocaleString()} {e.currency}</span></div><p className="muted">{e.date} / {categoryLabel[e.category]} / {e.ownerName}</p><p>{e.memo}</p>{e.receiptImageUrl && <img className="photo" src={e.receiptImageUrl} alt="receipt" />}{e.userId === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('expense', e)}>編集</button><button className="link" onClick={() => onDelete('expense', e.id)}>削除</button></div>}</article>)}</Section>; }
 function NotesView({ notes, currentUserId, onEdit, onDelete, setAddMode }: any) { return <Section title="共有メモ"><button className="btn" onClick={() => setAddMode('note')}>共有メモ追加</button>{notes.map((n: SharedNote) => <article className="card" key={n.id}><b>{n.title}</b><p className="muted">{n.createdByName}</p><p>{n.content}</p>{n.createdBy === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('note', n)}>編集</button><button className="link" onClick={() => onDelete('note', n.id)}>削除</button></div>}</article>)}</Section>; }
 function AIView({ chat, question, setQuestion, ask, saving }: any) { return <Section title="AIチャット"><div className="chat">{chat.map((m: ChatMessage, i: number) => <div key={i} className={`bubble ${m.role}`}>{m.content}</div>)}</div><div className="compose"><input className="input" placeholder="例: 彼女の明後日の予定は？" value={question} disabled={saving} onChange={e => setQuestion(e.target.value)} onKeyDown={e => e.key === 'Enter' && !saving && ask()} /><button className="btn" disabled={saving || !question.trim()} onClick={ask}>{saving ? '回答中...' : '質問'}</button></div></Section>; }
-function SettingsView({ user, groupId, setGroupId, partnerName, partnerRelationship, savePartnerProfile, reload, notificationEnabled, setNotificationEnabled, pushStatus, enablePush, repairSearchIndex, saving }: any) {
-  const [groupDraft, setGroupDraft] = useState(groupId);
+
+function ShareBadge({ item, currentUserId }: { item: { userId?: string; visibility?: Visibility; ownerName?: string }; currentUserId: string }) {
+  if (item.userId && item.userId !== currentUserId) return <span className="share-badge partner">{item.ownerName || '相手'}</span>;
+  if (item.visibility === 'shared') return <span className="share-badge shared">共有</span>;
+  return null;
+}
+
+function SettingsView({ user, groupId, setGroupId, partnerName, partnerRelationship, savePartnerProfile, reload, notificationEnabled, setNotificationEnabled, pushStatus, enablePush, repairSearchIndex, saving, sharedStats }: any) {
+  const [joinCode, setJoinCode] = useState('');
   const [partnerNameDraft, setPartnerNameDraft] = useState(partnerName);
   const [partnerRelationshipDraft, setPartnerRelationshipDraft] = useState(partnerRelationship);
-  useEffect(() => setGroupDraft(groupId), [groupId]);
   useEffect(() => setPartnerNameDraft(partnerName), [partnerName]);
   useEffect(() => setPartnerRelationshipDraft(partnerRelationship), [partnerRelationship]);
-  const generateCode = () => `couple_${Math.random().toString(36).slice(2, 8)}_${user.uid.slice(0, 4)}`;
-  const copyCode = async () => { await navigator.clipboard?.writeText(groupDraft.trim() || groupId); alert('共有IDをコピーしました'); };
-  return <Section title="設定"><div className="card"><h3><Users size={18}/> カップル共有</h3><p className="muted">同じ共有IDを2人で設定すると、sharedにした予定・ToDo・日記・支出・メモを共有できます。</p><input className="input" value={groupDraft} onChange={e => setGroupDraft(e.target.value)} /><div className="grid"><button className="btn" onClick={() => setGroupId(groupDraft)}>共有IDを保存</button><button className="btn secondary" onClick={() => { const code = generateCode(); setGroupDraft(code); setGroupId(code); }}><Share2 size={16}/> 招待コードを作成</button><button className="btn secondary" onClick={copyCode}><Copy size={16}/> コピー</button></div><input className="input" value={partnerNameDraft} onChange={e => setPartnerNameDraft(e.target.value)} placeholder="相手の名前（例: さき）" /><input className="input" value={partnerRelationshipDraft} onChange={e => setPartnerRelationshipDraft(e.target.value)} placeholder="関係性（例: 彼女、妻、夫、恋人）" /><button className="btn secondary" onClick={() => savePartnerProfile(partnerNameDraft, partnerRelationshipDraft)}>相手情報を保存</button><button className="btn secondary" onClick={reload}>共有データを再読み込み</button><p className="muted">使い方: 片方が招待コードを作成 → コピーして相手に送る → 相手が同じ共有IDに設定。保存した名前や関係性はAIへの質問でも使えます。</p></div><div className="card"><h3><Bell size={18}/> 通知</h3><label><input type="checkbox" checked={notificationEnabled} onChange={e => setNotificationEnabled(e.target.checked)} /> アプリ起動中の通知チェックを有効化</label><button className="btn" onClick={enablePush}>PWA Push通知を有効化</button><p className="muted">状態: {pushStatus}</p><p className="muted">iPhoneはSafariで開く → 共有 → ホーム画面に追加 → 追加したアイコンから開いて通知許可、の順に設定してください。</p></div><div className="card"><h3>AI検索</h3><p className="muted">AIの検索結果が古い、または登録した内容が見つからない時だけ修復してください。</p><button className="btn secondary" disabled={saving} onClick={repairSearchIndex}>{saving ? '修復中...' : 'AI検索を修復'}</button></div><button className="btn danger" onClick={() => signOut(auth)}>ログアウト</button><p className="muted">ログイン: {user.email}</p></Section>; }
+  const createInvite = () => setGroupId(inviteCode());
+  const copyCode = async () => { await navigator.clipboard?.writeText(groupId); alert('招待コードをコピーしました'); };
+  const joinShare = () => {
+    const code = joinCode.trim();
+    if (!code) return alert('招待コードを入力してください');
+    setGroupId(code);
+  };
+  const isSharing = Boolean(groupId && groupId !== newGroupId(user.uid));
+  const leaveShare = () => {
+    if (!confirm('共有を解除しますか？自分のデータは消えませんが、相手の共有データは表示されなくなります。')) return;
+    setGroupId(newGroupId(user.uid));
+  };
+  return <Section title="設定">
+    <div className="share-status-card">
+      <div><p className="eyebrow">共有状態</p><h3>{isSharing ? `共有中: ${partnerName || '未設定'}（${partnerRelationship || '相手'}）` : '未共有'}</h3><p className="muted">共有データ {sharedStats.sharedCount}件 / 相手の共有データ {sharedStats.partnerCount}件 / メモ {sharedStats.notesCount}件</p></div>
+      <button className="btn secondary" onClick={reload}>再読み込み</button>
+    </div>
+    <div className="card share-card"><h3><Share2 size={18}/> 相手を招待する</h3><p className="muted">このコードを相手に送ると、同じ共有スペースに参加できます。</p><label>招待コード</label><input className="input code-input" readOnly value={groupId} /><div className="grid"><button className="btn secondary" onClick={createInvite}><Share2 size={16}/> 新しいコードを作成</button><button className="btn secondary" onClick={copyCode}><Copy size={16}/> コピー</button></div></div>
+    <div className="card share-card"><h3><Users size={18}/> 招待コードで参加する</h3><p className="muted">相手から受け取った招待コードを入力します。入力後、共有データを再読み込みします。</p><input className="input code-input" value={joinCode} onChange={e => setJoinCode(e.target.value)} placeholder="例: PAIR-7K3Q-A9FM" /><button className="btn" onClick={joinShare}>参加する</button></div>
+    <div className="card share-card"><h3>相手情報</h3><p className="muted">AIへの質問で使う名前と関係性です。例: 「さきの予定」「妻の支出」</p><input className="input" value={partnerNameDraft} onChange={e => setPartnerNameDraft(e.target.value)} placeholder="相手の名前（例: さき）" /><input className="input" value={partnerRelationshipDraft} onChange={e => setPartnerRelationshipDraft(e.target.value)} placeholder="関係性（例: 彼女、妻、夫、恋人）" /><button className="btn secondary" onClick={() => savePartnerProfile(partnerNameDraft, partnerRelationshipDraft)}>相手情報を保存</button></div>
+    <div className="card"><h3><Bell size={18}/> 通知</h3><label><input type="checkbox" checked={notificationEnabled} onChange={e => setNotificationEnabled(e.target.checked)} /> アプリ起動中の通知チェックを有効化</label><button className="btn" onClick={enablePush}>PWA Push通知を有効化</button><p className="muted">状態: {pushStatus}</p><p className="muted">iPhoneはSafariで開く → 共有 → ホーム画面に追加 → 追加したアイコンから開いて通知許可、の順に設定してください。</p></div>
+    <div className="card"><h3>AI検索</h3><p className="muted">AIの検索結果が古い、または登録した内容が見つからない時だけ修復してください。</p><button className="btn secondary" disabled={saving} onClick={repairSearchIndex}>{saving ? '修復中...' : 'AI検索を修復'}</button></div>
+    <button className="btn danger full" disabled={!isSharing} onClick={leaveShare}>共有を解除</button>
+    <button className="btn danger full" onClick={() => signOut(auth)}>ログアウト</button><p className="muted">ログイン: {user.email}</p>
+  </Section>; }
 function Section({ title, children }: any) { return <><h2 className="title">{title}</h2>{children}</>; }
 function BottomNav({ tab, setTab }: any) { const items = [['home', Home, 'ホーム'], ['ai', MessageCircle, 'AI'], ['notes', StickyNote, 'メモ'], ['settings', Settings, '設定']] as const; return <nav className="bottom compact">{items.map(([key, Icon, label]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}><Icon size={18} /><span>{label}</span></button>)}</nav>; }
 
