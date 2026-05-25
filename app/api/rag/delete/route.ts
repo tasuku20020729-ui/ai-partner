@@ -10,7 +10,7 @@ export async function POST(req: Request) {
     const ref = adminDb().collection('aiMemory').doc(ragDocId(type, id));
     const snap = await ref.get();
     const data = snap.data();
-    if (snap.exists && (data?.groupId !== auth.groupId || data?.userId !== auth.uid)) return unauthorized();
+    if (snap.exists && (!auth.spaceIds.includes(data?.groupId) || data?.userId !== auth.uid)) return unauthorized();
     await ref.delete();
     return Response.json({ ok: true });
   } catch (e) {

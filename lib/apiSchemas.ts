@@ -8,6 +8,8 @@ export const ragUpsertSchema = z.object({
   userId: z.string().min(1).optional(),
   ownerName: z.string().optional(),
   groupId: z.string().min(1),
+  spaceId: z.string().optional(),
+  spaceName: z.string().optional(),
   visibility: z.enum(['private', 'shared']).optional(),
   aiReadable: z.boolean().optional(),
   date: z.string().optional(),
@@ -35,6 +37,7 @@ export const askBodySchema = z.object({
   partnerRelationship: z.string().max(80).optional(),
   currentUserId: z.string().optional(),
   groupId: z.string().optional(),
+  spaceIds: z.array(z.string().min(1)).max(30).optional(),
   data: z.unknown().optional()
 });
 

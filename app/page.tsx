@@ -1,19 +1,22 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { auth, db, storage } from '@/lib/firebase';
 import { createUserWithEmailAndPassword, onAuthStateChanged, signInWithEmailAndPassword, signOut, updateProfile, type User } from 'firebase/auth';
-import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, setDoc, updateDoc, where } from 'firebase/firestore';
+import { addDoc, collection, collectionGroup, deleteDoc, doc, getDoc, getDocs, increment, onSnapshot, query, setDoc, updateDoc, where } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { Bell, CalendarDays, CheckSquare, ChevronLeft, ChevronRight, Gift, Home, MessageCircle, NotebookPen, ReceiptText, Settings, StickyNote, Users, Copy, Share2 } from 'lucide-react';
 import { todayIso, toDateTimeLocalValue } from '@/lib/date';
 import { enablePwaPush } from '@/lib/push';
-import type { Anniversary, Currency, Diary, EventItem, Expense, ExpenseCategory, SharedNote, Todo, Visibility } from '@/types/app';
+import { personalSpaceId, personalSpaceName, scopeFieldsForSpace, sharedSpaceId } from '@/lib/spaces';
+import type { Anniversary, Currency, Diary, EventItem, Expense, ExpenseCategory, SharedNote, Space, SpaceMember, SpaceType, Todo, Visibility } from '@/types/app';
 
 type Tab = 'home' | 'diary' | 'calendar' | 'todo' | 'expense' | 'ai' | 'notes' | 'settings';
 type AddMode = 'diary' | 'event' | 'todo' | 'expense' | 'anniversary' | 'note' | null;
 type ChatMessage = { role: 'user' | 'ai'; content: string };
 type EditTarget = { mode: Exclude<AddMode, null>; id: string; data: Record<string, any> } | null;
+type SpaceSummary = Pick<Space, 'id' | 'name' | 'type'>;
+type MemberProfile = SpaceMember & { spaceName?: string };
 
 const categories: { value: ExpenseCategory; label: string }[] = [
   { value: 'food', label: '食費' }, { value: 'daily_goods', label: '日用品' }, { value: 'dating', label: '交際費' }, { value: 'transport', label: '交通費' }, { value: 'travel', label: '旅行' }, { value: 'medical', label: '医療費' }, { value: 'entertainment', label: '娯楽' }, { value: 'other', label: 'その他' }
@@ -21,7 +24,7 @@ const categories: { value: ExpenseCategory; label: string }[] = [
 const categoryLabel = Object.fromEntries(categories.map(c => [c.value, c.label]));
 const priorityLabel = { high: '高', middle: '中', low: '低' };
 const ratesToJpy: Record<Currency, number> = { JPY: 1, MYR: 33, USD: 155 }; // 自動取得は設計から除外。設定値として固定。
-const newGroupId = (uid: string) => `group_${uid}`;
+const newGroupId = personalSpaceId;
 const yen = (n: number) => `${Math.round(n).toLocaleString()}円`;
 const datePart = (s?: string) => {
   if (!s) return '';
@@ -46,6 +49,8 @@ const addMonths = (isoDate: string, months: number) => {
 const dateFromMonthDay = (monthIso: string, day: number) => `${monthIso.slice(0, 7)}-${String(day).padStart(2, '0')}`;
 const dateTimeOnDate = (date: string, time = '09:00') => `${date}T${time}`;
 const inviteCode = () => `PAIR-${Math.random().toString(36).slice(2, 6).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+const csvToList = (value: string) => Array.from(new Set(value.split(/[,、]/).map(v => v.trim()).filter(Boolean)));
+const listToCsv = (value?: string[]) => (value || []).join(', ');
 const partnerFieldValue = (value: unknown, configured?: unknown) => {
   if (typeof value !== 'string') return '';
   if (value === '彼女' && configured !== true && configured !== 'true') return '';
@@ -67,6 +72,8 @@ function toRagItem(type: AddMode | string, id: string, item: Record<string, any>
       userId: item.createdBy || item.userId,
       ownerName: item.createdByName || item.ownerName,
       groupId: item.groupId,
+      spaceId: item.spaceId || item.groupId,
+      spaceName: item.spaceName,
       visibility: 'shared',
       aiReadable: true,
       date: item.updatedAt || item.createdAt,
@@ -83,6 +90,8 @@ function toRagItem(type: AddMode | string, id: string, item: Record<string, any>
     userId: item.userId,
     ownerName: item.ownerName,
     groupId: item.groupId,
+    spaceId: item.spaceId || item.groupId,
+    spaceName: item.spaceName,
     visibility: item.visibility || 'private',
     aiReadable: item.aiReadable ?? true,
     date: item.date || item.startAt || item.dueAt || item.createdAt,
@@ -116,6 +125,10 @@ export default function Page() {
   const [password, setPassword] = useState('');
   const [groupId, setGroupId] = useState('');
   const [shareEnabled, setShareEnabled] = useState(false);
+  const [activeSpaceName, setActiveSpaceName] = useState(personalSpaceName);
+  const [spaces, setSpaces] = useState<SpaceSummary[]>([]);
+  const [spaceMembers, setSpaceMembers] = useState<MemberProfile[]>([]);
+  const [viewAllSpaces, setViewAllSpaces] = useState(false);
   const [partnerName, setPartnerName] = useState('');
   const [partnerRelationship, setPartnerRelationship] = useState('');
   const [dataLoading, setDataLoading] = useState(false);
@@ -138,6 +151,11 @@ export default function Page() {
   const [datePickerOpen, setDatePickerOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<EditTarget>(null);
   const [naturalDraft, setNaturalDraft] = useState<Record<string, any> | null>(null);
+  const activeSpaceIds = useMemo(() => {
+    const ids = spaces.map(space => space.id).filter(Boolean);
+    return ids.length ? ids : (user ? [newGroupId(user.uid)] : []);
+  }, [spaces, user?.uid]);
+  const visibleSpaceIds = useMemo(() => viewAllSpaces ? activeSpaceIds : (groupId ? [groupId] : []), [activeSpaceIds, groupId, viewAllSpaces]);
 
   useEffect(() => onAuthStateChanged(auth, async (u) => {
     try {
@@ -145,26 +163,38 @@ export default function Page() {
       if (u) {
         const userRef = doc(db, 'users', u.uid);
         const userSnap = await getDoc(userRef);
+        const uidPersonalSpaceId = personalSpaceId(u.uid);
         const savedGroupId = userSnap.data()?.groupId;
+        const savedActiveSpaceId = userSnap.data()?.activeSpaceId;
+        const savedPersonalSpaceId = userSnap.data()?.personalSpaceId;
         const cachedGroupId = localStorage.getItem(`groupId_${u.uid}`);
         const savedShareEnabled = userSnap.data()?.shareEnabled === true;
         const cachedShareEnabled = localStorage.getItem(`shareEnabled_${u.uid}`) === 'true';
         const nextShareEnabled = savedShareEnabled || cachedShareEnabled;
-        const gid = nextShareEnabled ? (savedGroupId || cachedGroupId || newGroupId(u.uid)) : newGroupId(u.uid);
+        const personalId = savedPersonalSpaceId || uidPersonalSpaceId;
+        const gid = nextShareEnabled ? (savedActiveSpaceId || savedGroupId || cachedGroupId || personalId) : personalId;
         const savedPartnerName = userSnap.data()?.partnerName;
         const savedPartnerRelationship = userSnap.data()?.partnerRelationship;
         const savedPartnerProfileConfigured = userSnap.data()?.partnerProfileConfigured;
         const cachedPartnerProfileConfigured = localStorage.getItem(`partnerProfileConfigured_${u.uid}`);
         setGroupId(gid);
         setShareEnabled(nextShareEnabled);
+        setViewAllSpaces(false);
         localStorage.setItem(`groupId_${u.uid}`, gid);
         localStorage.setItem(`shareEnabled_${u.uid}`, nextShareEnabled ? 'true' : 'false');
+        const activeSpaceSnap = gid === personalId ? null : await getDoc(doc(db, 'spaces', gid)).catch(() => null);
+        const nextActiveSpaceName = activeSpaceSnap?.data()?.name || (gid === personalId ? personalSpaceName : '共有スペース');
+        setActiveSpaceName(nextActiveSpaceName);
         const nextPartnerName = partnerFieldValue(savedPartnerName || localStorage.getItem(`partnerName_${u.uid}`), savedPartnerProfileConfigured || cachedPartnerProfileConfigured);
         const nextPartnerRelationship = partnerFieldValue(savedPartnerRelationship || localStorage.getItem(`partnerRelationship_${u.uid}`), savedPartnerProfileConfigured || cachedPartnerProfileConfigured);
         setPartnerName(nextPartnerName);
         setPartnerRelationship(nextPartnerRelationship);
         setNotificationEnabled(localStorage.getItem(`notify_${u.uid}`) === 'on');
-        await setDoc(userRef, { name: u.displayName || u.email || 'User', email: u.email, defaultCurrency: 'JPY', groupId: gid, shareEnabled: nextShareEnabled, partnerName: nextPartnerName, partnerRelationship: nextPartnerRelationship, partnerProfileConfigured: Boolean(nextPartnerName || nextPartnerRelationship), updatedAt: new Date().toISOString() }, { merge: true });
+        const now = new Date().toISOString();
+        await setDoc(doc(db, 'spaces', personalId), { name: personalSpaceName, type: 'personal', ownerId: u.uid, createdAt: userSnap.data()?.createdAt || now, updatedAt: now }, { merge: true });
+        await setDoc(doc(db, 'spaces', personalId, 'members', u.uid), { id: u.uid, spaceId: personalId, spaceName: personalSpaceName, userId: u.uid, displayName: u.displayName || u.email || '自分', role: 'owner', relationshipLabels: ['自分'], aliases: ['自分', '私', '自分だけ'], joinedAt: userSnap.data()?.createdAt || now, updatedAt: now }, { merge: true });
+        await setDoc(userRef, { name: u.displayName || u.email || 'User', email: u.email, defaultCurrency: 'JPY', personalSpaceId: personalId, activeSpaceId: gid, groupId: gid, shareEnabled: nextShareEnabled, partnerName: nextPartnerName, partnerRelationship: nextPartnerRelationship, partnerProfileConfigured: Boolean(nextPartnerName || nextPartnerRelationship), updatedAt: now }, { merge: true });
+        await loadJoinedSpaces(u.uid, personalId);
         await loadAll(u.uid, gid);
       }
     } catch (e) {
@@ -183,32 +213,48 @@ export default function Page() {
 
   useEffect(() => {
     const uid = user?.uid;
-    if (!uid || !groupId) return;
+    const targetSpaceIds = visibleSpaceIds.length ? visibleSpaceIds : (groupId ? [groupId] : []);
+    if (!uid || !targetSpaceIds.length) return;
     setLoadError('');
 
     const byDesc = (key: string) => (a: any, b: any) => String(b[key] || '').localeCompare(String(a[key] || ''));
     const byAsc = (key: string) => (a: any, b: any) => String(a[key] || '').localeCompare(String(b[key] || ''));
     const handleSyncError = (e: unknown) => setLoadError(e instanceof Error ? e.message : '共有データの自動同期に失敗しました');
     const subscribeScoped = <T extends { id: string }>(col: string, setItems: (items: T[]) => void, sortItems: (a: T, b: T) => number) => {
-      let own: T[] = [];
-      let shared: T[] = [];
-      let ownLoaded = false;
-      let sharedLoaded = false;
+      const own = new Map<string, T[]>();
+      const shared = new Map<string, T[]>();
+      const loaded = new Set<string>();
       const publish = () => {
-        if (!ownLoaded || !sharedLoaded) return;
-        setItems(mergeDocs(own, shared).sort(sortItems));
+        if (loaded.size < targetSpaceIds.length * 2) return;
+        setItems(mergeDocs(...Array.from(own.values()), ...Array.from(shared.values())).sort(sortItems));
       };
-      const ownUnsub = onSnapshot(
-        query(collection(db, col), where('userId', '==', uid), where('groupId', '==', groupId)),
-        snap => { own = snap.docs.map(v => ({ id: v.id, ...v.data() } as T)); ownLoaded = true; publish(); },
+      const unsubs = targetSpaceIds.flatMap(spaceId => [
+        onSnapshot(
+          query(collection(db, col), where('userId', '==', uid), where('groupId', '==', spaceId)),
+          snap => { own.set(spaceId, snap.docs.map(v => ({ id: v.id, ...v.data() } as T))); loaded.add(`${spaceId}:own`); publish(); },
+          handleSyncError
+        ),
+        onSnapshot(
+          query(collection(db, col), where('groupId', '==', spaceId), where('visibility', '==', 'shared')),
+          snap => { shared.set(spaceId, snap.docs.map(v => ({ id: v.id, ...v.data() } as T))); loaded.add(`${spaceId}:shared`); publish(); },
+          handleSyncError
+        )
+      ]);
+      return () => unsubs.forEach(unsub => unsub());
+    };
+    const subscribeNotes = () => {
+      const notes = new Map<string, SharedNote[]>();
+      const loaded = new Set<string>();
+      const publish = () => {
+        if (loaded.size < targetSpaceIds.length) return;
+        setSharedNotes(mergeDocs(...Array.from(notes.values())).sort(byDesc('createdAt')));
+      };
+      const unsubs = targetSpaceIds.map(spaceId => onSnapshot(
+        query(collection(db, 'sharedNotes'), where('groupId', '==', spaceId)),
+        snap => { notes.set(spaceId, snap.docs.map(v => ({ id: v.id, ...v.data() } as SharedNote))); loaded.add(spaceId); publish(); },
         handleSyncError
-      );
-      const sharedUnsub = onSnapshot(
-        query(collection(db, col), where('groupId', '==', groupId), where('visibility', '==', 'shared')),
-        snap => { shared = snap.docs.map(v => ({ id: v.id, ...v.data() } as T)); sharedLoaded = true; publish(); },
-        handleSyncError
-      );
-      return () => { ownUnsub(); sharedUnsub(); };
+      ));
+      return () => unsubs.forEach(unsub => unsub());
     };
 
     const unsubs = [
@@ -217,30 +263,24 @@ export default function Page() {
       subscribeScoped<Todo>('todos', setTodos, byDesc('createdAt')),
       subscribeScoped<Expense>('expenses', setExpenses, byDesc('date')),
       subscribeScoped<Anniversary>('anniversaries', setAnniversaries, byAsc('date')),
-      onSnapshot(
-        query(collection(db, 'sharedNotes'), where('groupId', '==', groupId)),
-        snap => setSharedNotes(snap.docs.map(v => ({ id: v.id, ...v.data() } as SharedNote)).sort(byDesc('createdAt'))),
-        handleSyncError
-      )
+      subscribeNotes()
     ];
 
     return () => unsubs.forEach(unsub => unsub());
-  }, [user?.uid, groupId]);
+  }, [user?.uid, groupId, visibleSpaceIds]);
 
-  async function loadAll(uid = user?.uid, gid = groupId) {
-    if (!uid || !gid) return;
+  async function loadAll(uid = user?.uid, gid: string | string[] = groupId) {
+    const targetSpaceIds = Array.isArray(gid) ? gid.filter(Boolean) : [gid].filter(Boolean);
+    if (!uid || !targetSpaceIds.length) return;
     setDataLoading(true);
     setLoadError('');
     try {
       const readScoped = async <T extends { id: string }>(col: string) => {
-        const [own, shared] = await Promise.all([
-          getDocs(query(collection(db, col), where('userId', '==', uid), where('groupId', '==', gid))),
-          getDocs(query(collection(db, col), where('groupId', '==', gid), where('visibility', '==', 'shared')))
-        ]);
-        return mergeDocs(
-          own.docs.map(v => ({ id: v.id, ...v.data() } as T)),
-          shared.docs.map(v => ({ id: v.id, ...v.data() } as T))
-        );
+        const snaps = await Promise.all(targetSpaceIds.flatMap(spaceId => [
+          getDocs(query(collection(db, col), where('userId', '==', uid), where('groupId', '==', spaceId))),
+          getDocs(query(collection(db, col), where('groupId', '==', spaceId), where('visibility', '==', 'shared')))
+        ]));
+        return mergeDocs(...snaps.map(snap => snap.docs.map(v => ({ id: v.id, ...v.data() } as T))));
       };
       const [d, e, t, x, a, n] = await Promise.all([
         readScoped<Diary>('diaries'),
@@ -248,7 +288,7 @@ export default function Page() {
         readScoped<Todo>('todos'),
         readScoped<Expense>('expenses'),
         readScoped<Anniversary>('anniversaries'),
-        getDocs(query(collection(db, 'sharedNotes'), where('groupId', '==', gid)))
+        Promise.all(targetSpaceIds.map(spaceId => getDocs(query(collection(db, 'sharedNotes'), where('groupId', '==', spaceId)))))
       ]);
       const byDesc = (key: string) => (a: any, b: any) => String(b[key] || '').localeCompare(String(a[key] || ''));
       const byAsc = (key: string) => (a: any, b: any) => String(a[key] || '').localeCompare(String(b[key] || ''));
@@ -257,11 +297,49 @@ export default function Page() {
       setTodos(t.sort(byDesc('createdAt')));
       setExpenses(x.sort(byDesc('date')));
       setAnniversaries(a.sort(byAsc('date')));
-      setSharedNotes(n.docs.map(v => ({ id: v.id, ...v.data() } as SharedNote)).sort(byDesc('createdAt')));
+      setSharedNotes(mergeDocs(...n.map(snap => snap.docs.map(v => ({ id: v.id, ...v.data() } as SharedNote)))).sort(byDesc('createdAt')));
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : 'データの読み込みに失敗しました');
     } finally {
       setDataLoading(false);
+    }
+  }
+
+  async function loadJoinedSpaces(uid = user?.uid, fallbackPersonalId = user ? newGroupId(user.uid) : '') {
+    if (!uid) return;
+    const personalId = fallbackPersonalId || newGroupId(uid);
+    try {
+      const memberSnap = await getDocs(query(collectionGroup(db, 'members'), where('userId', '==', uid)));
+      const memberSpaceIds = memberSnap.docs.map(v => String(v.data().spaceId || v.ref.parent.parent?.id || '')).filter(Boolean);
+      const ids = Array.from(new Set([personalId, ...memberSpaceIds]));
+      const loaded = await Promise.all(ids.map(async id => {
+        const member = memberSnap.docs.find(v => String(v.data().spaceId || v.ref.parent.parent?.id || '') === id)?.data();
+        const spaceSnap = await getDoc(doc(db, 'spaces', id)).catch(() => null);
+        const data = spaceSnap?.data();
+        return {
+          id,
+          name: String(data?.name || member?.spaceName || (id === personalId ? personalSpaceName : '共有スペース')),
+          type: (data?.type || (id === personalId ? 'personal' : 'group')) as SpaceType
+        };
+      }));
+      const sorted = loaded.sort((a, b) => Number(a.type !== 'personal') - Number(b.type !== 'personal') || a.name.localeCompare(b.name, 'ja'));
+      setSpaces(sorted);
+      await loadSpaceMembers(sorted);
+    } catch (e) {
+      setOperationError(e instanceof Error ? e.message : 'スペース一覧の読み込みに失敗しました');
+    }
+  }
+
+  async function loadSpaceMembers(spaceList = spaces) {
+    if (!spaceList.length) {
+      setSpaceMembers([]);
+      return;
+    }
+    try {
+      const snaps = await Promise.all(spaceList.map(space => getDocs(collection(db, 'spaces', space.id, 'members')).then(snap => ({ space, snap }))));
+      setSpaceMembers(snaps.flatMap(({ space, snap }) => snap.docs.map(memberDoc => ({ id: memberDoc.id, ...memberDoc.data(), spaceName: space.name } as MemberProfile))));
+    } catch (e) {
+      setOperationError(e instanceof Error ? e.message : 'メンバー情報の読み込みに失敗しました');
     }
   }
 
@@ -322,7 +400,7 @@ export default function Page() {
   return <div className="shell">
     <header className="top"><div className="brand"><div><h1>AI Life Diary v5</h1><p>カレンダー・ToDo・日記・支出</p></div><div className="avatar">{(user.displayName || user.email || 'U').slice(0, 1).toUpperCase()}</div></div></header>
     <main className="content">
-      {loadError && <div className="error-card"><div><b>データを読み込めませんでした</b><p>{loadError}</p></div><button className="btn secondary" disabled={dataLoading} onClick={() => loadAll(user.uid, groupId)}>{dataLoading ? '再読み込み中...' : '再読み込み'}</button></div>}
+      {loadError && <div className="error-card"><div><b>データを読み込めませんでした</b><p>{loadError}</p></div><button className="btn secondary" disabled={dataLoading} onClick={() => loadAll(user.uid, visibleSpaceIds.length ? visibleSpaceIds : groupId)}>{dataLoading ? '再読み込み中...' : '再読み込み'}</button></div>}
       {operationError && <div className="error-card"><div><b>操作に失敗しました</b><p>{operationError}</p></div><button className="btn secondary" onClick={() => setOperationError('')}>閉じる</button></div>}
       {operationMessage && <div className="sync-status">{operationMessage}</div>}
       {dataLoading && !loadError && <div className="sync-status">データを更新しています...</div>}
@@ -333,11 +411,11 @@ export default function Page() {
       {tab === 'expense' && <ExpenseView expenses={expenses} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} setAddMode={setAddMode} />}
       {tab === 'ai' && <AIView chat={chat} question={question} setQuestion={setQuestion} ask={askAI} saving={saving} />}
       {tab === 'notes' && <NotesView notes={sharedNotes} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} setAddMode={setAddMode} />}
-      {tab === 'settings' && <SettingsView user={user} groupId={groupId} shareEnabled={shareEnabled} setGroupId={saveGroupId} partnerName={partnerName} partnerRelationship={partnerRelationship} savePartnerProfile={savePartnerProfile} reload={() => loadAll()} notificationEnabled={notificationEnabled} setNotificationEnabled={enableNotifications} pushStatus={pushStatus} enablePush={enablePushNotifications} repairSearchIndex={repairSearchIndex} saving={saving} sharedStats={sharedStats} />}
+      {tab === 'settings' && <SettingsView user={user} groupId={groupId} shareEnabled={shareEnabled} viewAllSpaces={viewAllSpaces} activeSpaceName={viewAllSpaces ? 'すべて' : activeSpaceName} spaces={spaces} spaceMembers={spaceMembers} switchSpace={switchSpace} switchAllSpaces={switchAllSpaces} setGroupId={saveGroupId} createSpace={createSpace} createInvite={createInviteForActiveSpace} joinInvite={joinInvite} partnerName={partnerName} partnerRelationship={partnerRelationship} savePartnerProfile={savePartnerProfile} saveMemberProfile={saveMemberProfile} reload={() => loadAll(user.uid, visibleSpaceIds.length ? visibleSpaceIds : groupId)} notificationEnabled={notificationEnabled} setNotificationEnabled={enableNotifications} pushStatus={pushStatus} enablePush={enablePushNotifications} repairSearchIndex={repairSearchIndex} saving={saving} sharedStats={sharedStats} />}
     </main>
     <BottomNav tab={tab} setTab={setTab} />
     {datePickerOpen && <DateActionSheet selectedDate={selectedDate} close={() => setDatePickerOpen(false)} openAdd={openAddForDate} />}
-    {addMode && <AddModal mode={addMode} setMode={setAddMode} close={() => { setNaturalDraft(null); setEditTarget(null); setAddMode(null); }} save={saveDoc} user={user} groupId={groupId} partnerName={partnerName} selectedDate={selectedDate} editTarget={editTarget} draftData={naturalDraft} saving={saving} />}
+    {addMode && <AddModal mode={addMode} setMode={setAddMode} close={() => { setNaturalDraft(null); setEditTarget(null); setAddMode(null); }} save={saveDoc} user={user} spaces={spaces} activeSpaceId={groupId} activeSpaceName={activeSpaceName} partnerName={partnerName} selectedDate={selectedDate} editTarget={editTarget} draftData={naturalDraft} saving={saving} />}
   </div>;
 
   async function syncSearchIndex(type: AddMode | string, id: string, item: Record<string, any>) {
@@ -388,18 +466,205 @@ export default function Page() {
     }
     const previousGroupId = groupId;
     const previousShareEnabled = shareEnabled;
+    const previousActiveSpaceName = activeSpaceName;
     const nextShareEnabled = nextGroupId !== newGroupId(user.uid);
     setGroupId(nextGroupId);
     setShareEnabled(nextShareEnabled);
+    setViewAllSpaces(false);
+    setActiveSpaceName(nextShareEnabled ? activeSpaceName || '共有スペース' : personalSpaceName);
     try {
-      await setDoc(doc(db, 'users', user.uid), { groupId: nextGroupId, shareEnabled: nextShareEnabled, updatedAt: new Date().toISOString() }, { merge: true });
+      await setDoc(doc(db, 'users', user.uid), { groupId: nextGroupId, activeSpaceId: nextGroupId, shareEnabled: nextShareEnabled, updatedAt: new Date().toISOString() }, { merge: true });
       localStorage.setItem(`groupId_${user.uid}`, nextGroupId);
       localStorage.setItem(`shareEnabled_${user.uid}`, nextShareEnabled ? 'true' : 'false');
       await loadAll(user.uid, nextGroupId);
     } catch (e) {
       setGroupId(previousGroupId);
       setShareEnabled(previousShareEnabled);
+      setActiveSpaceName(previousActiveSpaceName);
       alert(e instanceof Error ? e.message : '共有IDの保存に失敗しました');
+    }
+  }
+  async function switchSpace(space: SpaceSummary) {
+    if (!user || saving) return false;
+    if (space.id === groupId && !viewAllSpaces) return true;
+    if (space.id === groupId && viewAllSpaces) {
+      setViewAllSpaces(false);
+      await loadAll(user.uid, space.id);
+      return true;
+    }
+    const previousGroupId = groupId;
+    const previousShareEnabled = shareEnabled;
+    const previousActiveSpaceName = activeSpaceName;
+    const nextShareEnabled = space.id !== newGroupId(user.uid);
+    setGroupId(space.id);
+    setShareEnabled(nextShareEnabled);
+    setViewAllSpaces(false);
+    setActiveSpaceName(space.name);
+    setOperationError('');
+    setOperationMessage('スペースを切り替えています...');
+    try {
+      await setDoc(doc(db, 'users', user.uid), { groupId: space.id, activeSpaceId: space.id, shareEnabled: nextShareEnabled, updatedAt: new Date().toISOString() }, { merge: true });
+      localStorage.setItem(`groupId_${user.uid}`, space.id);
+      localStorage.setItem(`shareEnabled_${user.uid}`, nextShareEnabled ? 'true' : 'false');
+      await loadAll(user.uid, space.id);
+      return true;
+    } catch (e) {
+      setGroupId(previousGroupId);
+      setShareEnabled(previousShareEnabled);
+      setActiveSpaceName(previousActiveSpaceName);
+      setOperationError(e instanceof Error ? e.message : 'スペースの切り替えに失敗しました');
+      return false;
+    } finally {
+      setOperationMessage('');
+    }
+  }
+  async function switchAllSpaces() {
+    if (!user || saving) return false;
+    const targetSpaceIds = activeSpaceIds.length ? activeSpaceIds : [newGroupId(user.uid)];
+    setViewAllSpaces(true);
+    setOperationError('');
+    setOperationMessage('すべてのスペースを読み込んでいます...');
+    try {
+      await loadAll(user.uid, targetSpaceIds);
+      return true;
+    } catch (e) {
+      setViewAllSpaces(false);
+      setOperationError(e instanceof Error ? e.message : 'すべてのスペースの読み込みに失敗しました');
+      return false;
+    } finally {
+      setOperationMessage('');
+    }
+  }
+  async function createSpace(name: string, type: SpaceType) {
+    if (!user) return false;
+    const spaceName = name.trim();
+    if (!spaceName) {
+      alert('スペース名を入力してください');
+      return false;
+    }
+    if (saving) return false;
+    setSaving(true);
+    setOperationError('');
+    setOperationMessage('共有スペースを作成しています...');
+    const previousGroupId = groupId;
+    const previousShareEnabled = shareEnabled;
+    const previousActiveSpaceName = activeSpaceName;
+    const spaceId = sharedSpaceId();
+    const now = new Date().toISOString();
+    try {
+      await setDoc(doc(db, 'spaces', spaceId), { name: spaceName, type, ownerId: user.uid, createdAt: now, updatedAt: now });
+      await setDoc(doc(db, 'spaces', spaceId, 'members', user.uid), { id: user.uid, spaceId, spaceName, userId: user.uid, displayName: user.displayName || user.email || '自分', role: 'owner', relationshipLabels: ['自分'], aliases: ['自分', '私'], joinedAt: now, updatedAt: now });
+      await setDoc(doc(db, 'users', user.uid), { groupId: spaceId, activeSpaceId: spaceId, shareEnabled: true, updatedAt: now }, { merge: true });
+      setGroupId(spaceId);
+      setShareEnabled(true);
+      setViewAllSpaces(false);
+      setActiveSpaceName(spaceName);
+      localStorage.setItem(`groupId_${user.uid}`, spaceId);
+      localStorage.setItem(`shareEnabled_${user.uid}`, 'true');
+      setSpaces(prev => mergeDocs<SpaceSummary>(prev, [{ id: spaceId, name: spaceName, type }]).sort((a, b) => Number(a.type !== 'personal') - Number(b.type !== 'personal') || a.name.localeCompare(b.name, 'ja')));
+      await loadAll(user.uid, spaceId);
+      await loadJoinedSpaces(user.uid);
+      return true;
+    } catch (e) {
+      setGroupId(previousGroupId);
+      setShareEnabled(previousShareEnabled);
+      setActiveSpaceName(previousActiveSpaceName);
+      setOperationError(e instanceof Error ? e.message : '共有スペースの作成に失敗しました');
+      return false;
+    } finally {
+      setOperationMessage('');
+      setSaving(false);
+    }
+  }
+  async function createInviteForActiveSpace() {
+    if (!user) return '';
+    if (!shareEnabled || groupId === newGroupId(user.uid)) {
+      alert('先に共有スペースを作成してください');
+      return '';
+    }
+    setSaving(true);
+    setOperationError('');
+    setOperationMessage('招待コードを作成しています...');
+    try {
+      const code = inviteCode();
+      const now = new Date().toISOString();
+      await setDoc(doc(db, 'invites', code), {
+        id: code,
+        code,
+        spaceId: groupId,
+        spaceName: activeSpaceName || '共有スペース',
+        createdBy: user.uid,
+        status: 'active',
+        usedCount: 0,
+        createdAt: now,
+        updatedAt: now
+      });
+      return code;
+    } catch (e) {
+      setOperationError(e instanceof Error ? e.message : '招待コードの作成に失敗しました');
+      return '';
+    } finally {
+      setOperationMessage('');
+      setSaving(false);
+    }
+  }
+  async function joinInvite(codeInput: string) {
+    if (!user) return false;
+    const code = codeInput.trim();
+    if (!code) {
+      alert('招待コードを入力してください');
+      return false;
+    }
+    setSaving(true);
+    setOperationError('');
+    setOperationMessage('招待コードを確認しています...');
+    const previousGroupId = groupId;
+    const previousShareEnabled = shareEnabled;
+    const previousActiveSpaceName = activeSpaceName;
+    try {
+      const inviteRef = doc(db, 'invites', code);
+      const inviteSnap = await getDoc(inviteRef);
+      const invite = inviteSnap.data();
+      if (!inviteSnap.exists() || invite?.status !== 'active' || !invite?.spaceId) throw new Error('招待コードが無効です');
+      if (invite.expiresAt && new Date(invite.expiresAt).getTime() < Date.now()) throw new Error('招待コードの有効期限が切れています');
+      if (invite.maxUses && Number(invite.usedCount || 0) >= Number(invite.maxUses)) throw new Error('招待コードの利用回数上限に達しています');
+
+      const spaceId = String(invite.spaceId);
+      const spaceName = String(invite.spaceName || '共有スペース');
+      const now = new Date().toISOString();
+      await setDoc(doc(db, 'spaces', spaceId, 'members', user.uid), {
+        id: user.uid,
+        spaceId,
+        spaceName,
+        userId: user.uid,
+        displayName: user.displayName || user.email || '自分',
+        role: 'member',
+        relationshipLabels: [],
+        aliases: [user.displayName || user.email || '自分'],
+        joinedAt: now,
+        updatedAt: now
+      }, { merge: true });
+      await setDoc(doc(db, 'users', user.uid), { groupId: spaceId, activeSpaceId: spaceId, shareEnabled: true, updatedAt: now }, { merge: true });
+      await updateDoc(inviteRef, { usedCount: increment(1), updatedAt: now });
+      setGroupId(spaceId);
+      setShareEnabled(true);
+      setViewAllSpaces(false);
+      setActiveSpaceName(spaceName);
+      localStorage.setItem(`groupId_${user.uid}`, spaceId);
+      localStorage.setItem(`shareEnabled_${user.uid}`, 'true');
+      setSpaces(prev => mergeDocs<SpaceSummary>(prev, [{ id: spaceId, name: spaceName, type: 'group' }]).sort((a, b) => Number(a.type !== 'personal') - Number(b.type !== 'personal') || a.name.localeCompare(b.name, 'ja')));
+      await loadAll(user.uid, spaceId);
+      await loadJoinedSpaces(user.uid);
+      return true;
+    } catch (e) {
+      setGroupId(previousGroupId);
+      setShareEnabled(previousShareEnabled);
+      setActiveSpaceName(previousActiveSpaceName);
+      setOperationError(e instanceof Error ? e.message : '共有スペースへの参加に失敗しました');
+      return false;
+    } finally {
+      setOperationMessage('');
+      setSaving(false);
     }
   }
   async function savePartnerProfile(name: string, relationship: string) {
@@ -415,6 +680,38 @@ export default function Page() {
       await setDoc(doc(db, 'users', user.uid), { partnerName: nextName, partnerRelationship: nextRelationship, partnerProfileConfigured: Boolean(nextName || nextRelationship), updatedAt: new Date().toISOString() }, { merge: true });
     } catch (e) {
       alert(e instanceof Error ? e.message : '相手情報の保存に失敗しました');
+    }
+  }
+
+  async function saveMemberProfile(spaceId: string, displayName: string, relationshipsText: string, aliasesText: string) {
+    if (!user || saving) return false;
+    const space = spaces.find(item => item.id === spaceId);
+    if (!space) return false;
+    const nextDisplayName = displayName.trim() || user.displayName || user.email || '自分';
+    const relationshipLabels = csvToList(relationshipsText);
+    const aliases = csvToList(aliasesText);
+    setSaving(true);
+    setOperationError('');
+    setOperationMessage('メンバー情報を保存しています...');
+    try {
+      await setDoc(doc(db, 'spaces', spaceId, 'members', user.uid), {
+        id: user.uid,
+        spaceId,
+        spaceName: space.name,
+        userId: user.uid,
+        displayName: nextDisplayName,
+        relationshipLabels,
+        aliases: aliases.length ? aliases : [nextDisplayName],
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+      await loadSpaceMembers(spaces);
+      return true;
+    } catch (e) {
+      setOperationError(e instanceof Error ? e.message : 'メンバー情報の保存に失敗しました');
+      return false;
+    } finally {
+      setOperationMessage('');
+      setSaving(false);
     }
   }
 
@@ -456,6 +753,8 @@ export default function Page() {
   async function saveDoc(type: AddMode, data: Record<string, any>) {
     if (!type || !user) return false;
     if (saving) return false;
+    const selectedSpaceId = data.spaceId || groupId;
+    const selectedSpace = spaces.find(space => space.id === selectedSpaceId) || ({ id: selectedSpaceId, name: data.spaceName || activeSpaceName || personalSpaceName, type: selectedSpaceId === newGroupId(user.uid) ? 'personal' : 'group' } as SpaceSummary);
     setSaving(true);
     setOperationError('');
     setOperationMessage(editTarget ? '更新しています...' : '保存しています...');
@@ -463,7 +762,9 @@ export default function Page() {
       const now = new Date().toISOString();
       const target = editTarget?.mode === type ? editTarget : null;
       const existing = target?.data || {};
-      const base = { userId: user.uid, ownerName: user.displayName || user.email || '自分', groupId, visibility: data.visibility || existing.visibility || 'private', aiReadable: data.aiReadable ?? existing.aiReadable ?? true, createdAt: existing.createdAt || now, updatedAt: now };
+      const targetSpaceId = data.spaceId || existing.spaceId || existing.groupId || groupId;
+      const targetSpaceName = data.spaceName || existing.spaceName || selectedSpace.name || activeSpaceName;
+      const base = { userId: user.uid, ownerName: user.displayName || user.email || '自分', ...scopeFieldsForSpace(targetSpaceId, targetSpaceName), visibility: data.visibility || existing.visibility || 'private', aiReadable: data.aiReadable ?? existing.aiReadable ?? true, createdAt: existing.createdAt || now, updatedAt: now };
       let savedId = '';
       let savedPayload: Record<string, any> = {};
       if (type === 'expense') {
@@ -472,7 +773,7 @@ export default function Page() {
         if (target) { savedId = target.id; await updateDoc(doc(db, 'expenses', savedId), savedPayload); }
         else { const refDoc = await addDoc(collection(db, 'expenses'), savedPayload); savedId = refDoc.id; }
       } else if (type === 'note') {
-        savedPayload = { ...existing, groupId, title: data.title, content: data.content, createdBy: user.uid, createdByName: user.displayName || user.email || '自分', createdAt: existing.createdAt || now, updatedAt: now };
+        savedPayload = { ...existing, ...scopeFieldsForSpace(targetSpaceId, targetSpaceName), title: data.title, content: data.content, createdBy: user.uid, createdByName: user.displayName || user.email || '自分', createdAt: existing.createdAt || now, updatedAt: now };
         if (target) { savedId = target.id; await updateDoc(doc(db, 'sharedNotes', savedId), savedPayload); }
         else { const refDoc = await addDoc(collection(db, 'sharedNotes'), savedPayload); savedId = refDoc.id; }
       } else {
@@ -515,7 +816,8 @@ export default function Page() {
           partnerRelationship,
           currentUserId: user.uid,
           groupId,
-          data: visible,
+          spaceIds: visibleSpaceIds.length ? visibleSpaceIds : [groupId],
+          data: { ...visible, members: spaceMembers },
         }),
       });
       const json = await res.json();
@@ -662,45 +964,73 @@ function ShareBadge({ item, currentUserId }: { item: { userId?: string; visibili
   return null;
 }
 
-function SettingsView({ user, groupId, shareEnabled, setGroupId, partnerName, partnerRelationship, savePartnerProfile, reload, notificationEnabled, setNotificationEnabled, pushStatus, enablePush, repairSearchIndex, saving, sharedStats }: any) {
+function SettingsView({ user, groupId, shareEnabled, viewAllSpaces, activeSpaceName, spaces, spaceMembers, switchSpace, switchAllSpaces, setGroupId, createSpace, createInvite, joinInvite, partnerName, partnerRelationship, savePartnerProfile, saveMemberProfile, reload, notificationEnabled, setNotificationEnabled, pushStatus, enablePush, repairSearchIndex, saving, sharedStats }: any) {
   const [joinCode, setJoinCode] = useState('');
+  const [inviteDraft, setInviteDraft] = useState('');
   const [shareMode, setShareMode] = useState<'idle' | 'invite' | 'join'>('idle');
+  const [spaceNameDraft, setSpaceNameDraft] = useState('');
+  const [spaceTypeDraft, setSpaceTypeDraft] = useState<SpaceType>('group');
   const [partnerNameDraft, setPartnerNameDraft] = useState(partnerName);
   const [partnerRelationshipDraft, setPartnerRelationshipDraft] = useState(partnerRelationship);
+  const [memberDrafts, setMemberDrafts] = useState<Record<string, { displayName: string; relationships: string; aliases: string }>>({});
   useEffect(() => setPartnerNameDraft(partnerName), [partnerName]);
   useEffect(() => setPartnerRelationshipDraft(partnerRelationship), [partnerRelationship]);
-  const createInvite = () => {
-    setShareMode('invite');
-    setGroupId(inviteCode());
-  };
+  useEffect(() => {
+    const mine = (spaceMembers || []).filter((member: MemberProfile) => member.userId === user.uid);
+    setMemberDrafts(Object.fromEntries(mine.map((member: MemberProfile) => [member.spaceId, { displayName: member.displayName || '', relationships: listToCsv(member.relationshipLabels), aliases: listToCsv(member.aliases) }])));
+  }, [spaceMembers, user.uid]);
   const isSharing = Boolean(shareEnabled && groupId && groupId !== newGroupId(user.uid));
-  const displayInviteCode = isSharing ? groupId : '';
   const copyCode = async () => {
-    if (!displayInviteCode) return alert('先に招待コードを作成してください');
-    await navigator.clipboard?.writeText(displayInviteCode);
+    if (!inviteDraft) return alert('先に招待コードを作成してください');
+    await navigator.clipboard?.writeText(inviteDraft);
     alert('招待コードをコピーしました');
   };
-  const joinShare = () => {
-    const code = joinCode.trim();
-    if (!code) return alert('招待コードを入力してください');
-    setGroupId(code);
-    setShareMode('idle');
+  const issueInvite = async () => {
+    const code = await createInvite();
+    if (code) setInviteDraft(code);
   };
-  const leaveShare = () => {
+  const joinShare = async () => {
+    const ok = await joinInvite(joinCode);
+    if (ok) {
+      setJoinCode('');
+      setShareMode('idle');
+    }
+  };
+  const leaveShare = async () => {
     if (!confirm('共有を解除しますか？自分のデータは消えませんが、相手の共有データは表示されなくなります。')) return;
-    setGroupId(newGroupId(user.uid));
+    await setGroupId(newGroupId(user.uid));
+    setInviteDraft('');
     setShareMode('idle');
   };
-  const showInvite = isSharing || shareMode === 'invite';
+  const showInvite = isSharing;
   const showJoin = !isSharing && shareMode === 'join';
+  const spaceOptions = spaces.length ? spaces : [{ id: newGroupId(user.uid), name: personalSpaceName, type: 'personal' as SpaceType }];
+  const submitCreateSpace = async () => {
+    const ok = await createSpace(spaceNameDraft, spaceTypeDraft);
+    if (ok) {
+      setSpaceNameDraft('');
+      setShareMode('idle');
+    }
+  };
+  const updateMemberDraft = (spaceId: string, key: 'displayName' | 'relationships' | 'aliases', value: string) => {
+    setMemberDrafts(prev => ({ ...prev, [spaceId]: { displayName: '', relationships: '', aliases: '', ...(prev[spaceId] || {}), [key]: value } }));
+  };
   return <Section title="設定">
     <div className="share-status-card">
-      <div><p className="eyebrow">共有状態</p><h3>{isSharing ? `共有中: ${partnerName || '未設定'}（${partnerRelationship || '相手'}）` : '未共有'}</h3><p className="muted">共有データ {sharedStats.sharedCount}件 / 相手の共有データ {sharedStats.partnerCount}件 / メモ {sharedStats.notesCount}件</p></div>
+      <div><p className="eyebrow">共有状態</p><h3>{isSharing ? `共有中: ${activeSpaceName || '共有スペース'}` : '未共有'}</h3><p className="muted">共有データ {sharedStats.sharedCount}件 / 相手の共有データ {sharedStats.partnerCount}件 / メモ {sharedStats.notesCount}件</p></div>
       <button className="btn secondary" onClick={reload}>再読み込み</button>
     </div>
-    {!isSharing && shareMode === 'idle' && <div className="card share-card share-start-card"><h3><Users size={18}/> 共有をはじめる</h3><p className="muted">初期状態は共有なしです。共有したい時だけ、招待コードを作成するか、相手から受け取ったコードで参加します。</p><div className="share-choice-grid"><button className="btn" onClick={createInvite}><Share2 size={16}/> 招待する</button><button className="btn secondary" onClick={() => setShareMode('join')}><Users size={16}/> 参加する</button></div></div>}
-    {showInvite && <div className="card share-card"><h3><Share2 size={18}/> 相手を招待する</h3><p className="muted">このコードを相手に送ると、同じ共有スペースに参加できます。</p><label>招待コード</label><input className="input code-input" readOnly value={displayInviteCode} placeholder="未共有" /><div className="grid"><button className="btn secondary" onClick={createInvite}><Share2 size={16}/> 新しいコードを作成</button><button className="btn secondary" disabled={!displayInviteCode} onClick={copyCode}><Copy size={16}/> コピー</button></div>{!isSharing && <button className="link edit-link" onClick={() => setShareMode('idle')}>戻る</button>}</div>}
-    {showJoin && <div className="card share-card"><h3><Users size={18}/> 招待コードで参加する</h3><p className="muted">相手から受け取った招待コードを入力します。入力後、共有データを再読み込みします。</p><input className="input code-input" value={joinCode} onChange={e => setJoinCode(e.target.value)} placeholder="例: PAIR-7K3Q-A9FM" /><div className="grid"><button className="btn" onClick={joinShare}>参加する</button><button className="btn secondary" onClick={() => setShareMode('idle')}>戻る</button></div></div>}
+    <div className="card share-card"><h3><Users size={18}/> スペース切替</h3><p className="muted">表示・AI検索の対象にするスペースを選びます。登録時の保存先は入力画面で選択できます。</p><div className="space-switcher"><button className={viewAllSpaces ? 'active' : ''} disabled={saving || viewAllSpaces} onClick={switchAllSpaces}><span>すべて</span><small>{spaceOptions.length}件</small></button>{spaceOptions.map((space: SpaceSummary) => <button key={space.id} className={!viewAllSpaces && space.id === groupId ? 'active' : ''} disabled={saving || (!viewAllSpaces && space.id === groupId)} onClick={() => switchSpace(space)}><span>{space.name}</span><small>{space.type === 'personal' ? '自分' : space.type === 'pair' ? '1対1' : 'グループ'}</small></button>)}</div></div>
+    {!isSharing && shareMode === 'idle' && <div className="card share-card share-start-card"><h3><Users size={18}/> 共有をはじめる</h3><p className="muted">初期状態は共有なしです。家族・友人などのスペースを作るか、相手から受け取ったコードで参加します。</p><div className="share-choice-grid"><button className="btn" onClick={() => setShareMode('invite')}><Share2 size={16}/> 作成する</button><button className="btn secondary" onClick={() => setShareMode('join')}><Users size={16}/> 参加する</button></div></div>}
+    {shareMode === 'invite' && !isSharing && <div className="card share-card"><h3><Share2 size={18}/> 共有スペースを作成</h3><p className="muted">家族、友人、旅行など、共有したい単位でスペースを作成します。</p><input className="input" value={spaceNameDraft} onChange={e => setSpaceNameDraft(e.target.value)} placeholder="スペース名（例: 家族、友人、旅行）" /><select className="select" value={spaceTypeDraft} onChange={e => setSpaceTypeDraft(e.target.value as SpaceType)}><option value="group">グループ</option><option value="pair">1対1</option></select><div className="grid"><button className="btn" disabled={!spaceNameDraft.trim() || saving} onClick={submitCreateSpace}>{saving ? '作成中...' : '作成'}</button><button className="btn secondary" disabled={saving} onClick={() => setShareMode('idle')}>戻る</button></div></div>}
+    {showInvite && <div className="card share-card"><h3><Share2 size={18}/> 相手を招待する</h3><p className="muted">招待コードを作成して相手に送ると、この共有スペースに参加できます。</p><label>招待コード</label><input className="input code-input" readOnly value={inviteDraft} placeholder="未作成" /><div className="grid"><button className="btn secondary" disabled={saving} onClick={issueInvite}>{saving ? '作成中...' : '招待コードを作成'}</button><button className="btn secondary" disabled={!inviteDraft} onClick={copyCode}><Copy size={16}/> コピー</button></div></div>}
+    {showJoin && <div className="card share-card"><h3><Users size={18}/> 招待コードで参加する</h3><p className="muted">相手から受け取った招待コードを入力します。招待に紐づいた共有スペースへ参加します。</p><input className="input code-input" value={joinCode} onChange={e => setJoinCode(e.target.value)} placeholder="例: PAIR-7K3Q-A9FM" /><div className="grid"><button className="btn" disabled={saving || !joinCode.trim()} onClick={joinShare}>{saving ? '参加中...' : '参加する'}</button><button className="btn secondary" disabled={saving} onClick={() => setShareMode('idle')}>戻る</button></div></div>}
+    <div className="card share-card"><h3><Users size={18}/> メンバー情報</h3><p className="muted">自分が各スペースでどう呼ばれるかを登録します。AIはここに入れた名前・関係性・呼び名で「友人Aの予定」のような質問を解釈します。</p><div className="member-profile-list">{spaceOptions.map((space: SpaceSummary) => {
+      const members = (spaceMembers || []).filter((member: MemberProfile) => member.spaceId === space.id);
+      const mine = members.find((member: MemberProfile) => member.userId === user.uid);
+      const draft = memberDrafts[space.id] || { displayName: mine?.displayName || '', relationships: listToCsv(mine?.relationshipLabels), aliases: listToCsv(mine?.aliases) };
+      return <div className="member-profile" key={space.id}><div className="row"><b>{space.name}</b><span>{members.length}人</span></div><input className="input" value={draft.displayName} onChange={e => updateMemberDraft(space.id, 'displayName', e.target.value)} placeholder="このスペースでの表示名" /><input className="input" value={draft.relationships} onChange={e => updateMemberDraft(space.id, 'relationships', e.target.value)} placeholder="関係性（カンマ区切り: 友人, 家族）" /><input className="input" value={draft.aliases} onChange={e => updateMemberDraft(space.id, 'aliases', e.target.value)} placeholder="呼び名（カンマ区切り: さき, 友人A）" /><button className="btn secondary" disabled={saving} onClick={() => saveMemberProfile(space.id, draft.displayName, draft.relationships, draft.aliases)}>保存</button>{members.length > 0 && <p className="muted">参加中: {members.map((member: MemberProfile) => member.displayName || member.userId).join(' / ')}</p>}</div>;
+    })}</div></div>
     <div className="card share-card"><h3>相手情報</h3><p className="muted">AIへの質問で使う名前と関係性です。例: 「さきの予定」「家族の支出」</p><input className="input" value={partnerNameDraft} onChange={e => setPartnerNameDraft(e.target.value)} placeholder="相手の名前（例: さき）" /><input className="input" value={partnerRelationshipDraft} onChange={e => setPartnerRelationshipDraft(e.target.value)} placeholder="関係性（例: 家族、友人、パートナー）" /><button className="btn secondary" onClick={() => savePartnerProfile(partnerNameDraft, partnerRelationshipDraft)}>相手情報を保存</button></div>
     <div className="card"><h3><Bell size={18}/> 通知</h3><label><input type="checkbox" checked={notificationEnabled} onChange={e => setNotificationEnabled(e.target.checked)} /> アプリ起動中の通知チェックを有効化</label><button className="btn" onClick={enablePush}>PWA Push通知を有効化</button><p className="muted">状態: {pushStatus}</p><p className="muted">iPhoneはSafariで開く → 共有 → ホーム画面に追加 → 追加したアイコンから開いて通知許可、の順に設定してください。</p></div>
     <div className="card"><h3>AI検索</h3><p className="muted">AIの検索結果が古い、または登録した内容が見つからない時だけ修復してください。</p><button className="btn secondary" disabled={saving} onClick={repairSearchIndex}>{saving ? '修復中...' : 'AI検索を修復'}</button></div>
@@ -722,10 +1052,24 @@ function initialFormFor(mode: AddMode, selectedDate: string, item?: Record<strin
   return { ...base, ...item };
 }
 
-function AddModal({ mode, setMode, close, save, user, partnerName, selectedDate, editTarget, draftData, saving }: { mode: AddMode; setMode: (m: AddMode) => void; close: () => void; save: (m: AddMode, d: any) => void | Promise<unknown>; user: User; groupId: string; partnerName: string; selectedDate: string; editTarget: EditTarget; draftData: Record<string, any> | null; saving: boolean }) {
-  const [form, setForm] = useState<Record<string, any>>(() => initialFormFor(mode, selectedDate, editTarget?.data || draftData || undefined));
+function AddModal({ mode, setMode, close, save, user, spaces, activeSpaceId, activeSpaceName, partnerName, selectedDate, editTarget, draftData, saving }: { mode: Exclude<AddMode, null>; setMode: (m: AddMode) => void; close: () => void; save: (m: AddMode, d: any) => void | Promise<unknown>; user: User; spaces: SpaceSummary[]; activeSpaceId: string; activeSpaceName: string; partnerName: string; selectedDate: string; editTarget: EditTarget; draftData: Record<string, any> | null; saving: boolean }) {
+  const fallbackSpace = useMemo(() => ({ id: activeSpaceId || newGroupId(user.uid), name: activeSpaceName || personalSpaceName, type: (activeSpaceId === newGroupId(user.uid) ? 'personal' : 'group') as SpaceType }), [activeSpaceId, activeSpaceName, user.uid]);
+  const spaceOptions = useMemo(() => spaces.length ? spaces : [fallbackSpace], [spaces, fallbackSpace]);
+  const buildInitialForm = useCallback(() => {
+    const source = editTarget?.data || draftData || undefined;
+    const sourceSpaceId = source?.spaceId || source?.groupId || activeSpaceId || fallbackSpace.id;
+    const selectedSpace = spaceOptions.find(space => space.id === sourceSpaceId) || fallbackSpace;
+    const initial = initialFormFor(mode, selectedDate, source);
+    return { ...initial, visibility: selectedSpace.type === 'personal' ? 'private' : initial.visibility, spaceId: selectedSpace.id, spaceName: source?.spaceName || selectedSpace.name };
+  }, [activeSpaceId, draftData, editTarget?.data, fallbackSpace, mode, selectedDate, spaceOptions]);
+  const [form, setForm] = useState<Record<string, any>>(buildInitialForm);
   const [receiptBusy, setReceiptBusy] = useState(false); const [aiBusy, setAiBusy] = useState(false); const [aiText, setAiText] = useState('');
+  useEffect(() => { setForm(buildInitialForm()); }, [buildInitialForm]);
   const set = (k: string, v: any) => setForm(f => ({ ...f, [k]: v }));
+  const changeSpace = (spaceId: string) => {
+    const next = spaceOptions.find(space => space.id === spaceId) || fallbackSpace;
+    setForm(f => ({ ...f, spaceId: next.id, spaceName: next.name, visibility: next.type === 'personal' ? 'private' : f.visibility }));
+  };
   async function uploadImage(file: File, folder: string) { const path = `${folder}/${user.uid}/${Date.now()}_${file.name}`; const storageRef = ref(storage, path); await uploadBytes(storageRef, file); return getDownloadURL(storageRef); }
   return <div className="modal"><div className="panel">{!editTarget && !draftData && <div className="tabs"><button className={mode === 'diary' ? 'active' : ''} onClick={() => setMode('diary')}>日記</button><button className={mode === 'event' ? 'active' : ''} onClick={() => setMode('event')}>予定</button><button className={mode === 'todo' ? 'active' : ''} onClick={() => setMode('todo')}>ToDo</button><button className={mode === 'expense' ? 'active' : ''} onClick={() => setMode('expense')}>支出</button><button className={mode === 'anniversary' ? 'active' : ''} onClick={() => setMode('anniversary')}>記念日</button><button className={mode === 'note' ? 'active' : ''} onClick={() => setMode('note')}>メモ</button></div>}<h2 className="title">{editTarget ? '編集' : draftData ? 'AI解析結果を確認' : '追加'}</h2>{draftData && <p className="status-text">AIが作った候補です。日時・金額・種別を確認してから保存してください。</p>}
     {mode === 'diary' && <><input className="input" placeholder="タイトル" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.date} onChange={e => set('date', e.target.value)} /><textarea className="textarea" placeholder="内容" value={form.content || ''} onChange={e => set('content', e.target.value)} /><input className="input" placeholder="気分・タグ" value={form.mood || ''} onChange={e => set('mood', e.target.value)} /><label>写真</label><input className="input" type="file" accept="image/*" multiple onChange={async e => { const files = Array.from(e.target.files || []) as File[]; const urls: string[] = []; for (const file of files) urls.push(await uploadImage(file, 'diaries')); set('photos', urls); }} /></>}
@@ -734,7 +1078,8 @@ function AddModal({ mode, setMode, close, save, user, partnerName, selectedDate,
     {mode === 'expense' && <><div className="card" style={{ boxShadow: 'none' }}><h3>AI自然文入力</h3><input className="input" placeholder="例: 昨日Grabで35リンギット使った" value={aiText} disabled={aiBusy || saving} onChange={e => setAiText(e.target.value)} /><button className="btn secondary" disabled={!aiText.trim() || aiBusy || saving} onClick={async () => { setAiBusy(true); try { const res = await fetch('/api/ai/natural-entry', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify({ text: aiText }) }); const json = await res.json(); if (!res.ok || !json.entry) throw new Error(json.error || 'AI入力に失敗しました'); setForm(f => ({ ...f, ...json.entry, inputType: 'ai_text' })); } catch (err) { alert(err instanceof Error ? err.message : 'AI入力に失敗しました'); } finally { setAiBusy(false); } }}>{aiBusy ? '解析中...' : 'AIで入力'}</button></div><label>レシート写真</label><input className="input" type="file" accept="image/*" disabled={receiptBusy || saving} onChange={async e => { const file = e.target.files?.[0]; if (!file) return; setReceiptBusy(true); try { const url = await uploadImage(file, 'receipts'); const res = await fetch('/api/ai/receipt', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify({ imageUrl: url }) }); const json = await res.json(); if (!res.ok || !json.expense) throw new Error(json.error || 'レシート解析に失敗しました'); setForm(f => ({ ...f, ...json.expense, receiptImageUrl: url, inputType: 'receipt' })); } catch (err) { alert(err instanceof Error ? err.message : 'レシート解析に失敗しました'); } finally { setReceiptBusy(false); } }} />{receiptBusy && <p className="muted">レシート解析中...</p>}<input className="input" placeholder="タイトル" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.date} onChange={e => set('date', e.target.value)} /><input className="input" type="number" placeholder="金額" value={form.amount || ''} onChange={e => set('amount', e.target.value)} /><select className="select" value={form.currency} onChange={e => set('currency', e.target.value)}><option value="JPY">JPY</option><option value="MYR">MYR</option><option value="USD">USD</option></select><select className="select" value={form.category} onChange={e => set('category', e.target.value)}>{categories.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}</select><input className="input" placeholder="店名" value={form.shopName || ''} onChange={e => set('shopName', e.target.value)} /><textarea className="textarea" placeholder="メモ" value={form.memo || ''} onChange={e => set('memo', e.target.value)} /></>}
     {mode === 'anniversary' && <><input className="input" placeholder="記念日名" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.date} onChange={e => set('date', e.target.value)} /><select className="select" value={form.repeat} onChange={e => set('repeat', e.target.value)}><option value="yearly">毎年</option><option value="none">一回だけ</option></select></>}
     {mode === 'note' && <><input className="input" placeholder="メモタイトル" value={form.title || ''} onChange={e => set('title', e.target.value)} /><textarea className="textarea" placeholder="共有メモ内容" value={form.content || ''} onChange={e => set('content', e.target.value)} /></>}
-    {mode !== 'note' && <><select className="select" value={form.visibility} onChange={e => set('visibility', e.target.value)}><option value="private">自分だけ</option><option value="shared">共有</option></select><label><input type="checkbox" checked={form.aiReadable} onChange={e => set('aiReadable', e.target.checked)} /> AI参照を許可</label></>}<div className="grid" style={{ marginTop: 14 }}><button className="btn secondary" disabled={saving} onClick={close}>閉じる</button><button className="btn" disabled={saving || receiptBusy || aiBusy} onClick={() => save(mode, normalize(mode, form))}>{saving ? '処理中...' : editTarget ? '更新' : '保存'}</button></div><p className="muted">共有設定にすると、同じ共有IDの相手がAIで参照できます。相手の呼び名: {partnerName || '未設定'}</p></div></div>;
+    <div className="space-select-box"><label>保存先スペース</label><select className="select" value={form.spaceId || activeSpaceId} onChange={e => changeSpace(e.target.value)}>{spaceOptions.map(space => <option key={space.id} value={space.id}>{space.name}（{space.type === 'personal' ? '自分' : space.type === 'pair' ? '1対1' : 'グループ'}）</option>)}</select></div>
+    {mode !== 'note' && <><select className="select" value={form.visibility} onChange={e => set('visibility', e.target.value)} disabled={(spaceOptions.find(space => space.id === form.spaceId)?.type || fallbackSpace.type) === 'personal'}><option value="private">自分だけ</option><option value="shared">共有</option></select><label><input type="checkbox" checked={form.aiReadable} onChange={e => set('aiReadable', e.target.checked)} /> AI参照を許可</label></>}<div className="grid" style={{ marginTop: 14 }}><button className="btn secondary" disabled={saving} onClick={close}>閉じる</button><button className="btn" disabled={saving || receiptBusy || aiBusy} onClick={() => save(mode, normalize(mode, form))}>{saving ? '処理中...' : editTarget ? '更新' : '保存'}</button></div><p className="muted">保存先スペースと共有設定に応じて、AIが参照できる範囲が変わります。相手の呼び名: {partnerName || '未設定'}</p></div></div>;
 }
 function normalize(mode: AddMode, f: Record<string, any>) { if (mode === 'diary') { const { location, locationName, lat, lng, ...diary } = f; return { ...diary, tags: f.mood ? [f.mood] : [] }; } if (mode === 'event') return { ...f, startAt: new Date(f.startAt).toISOString(), endAt: f.endAt ? new Date(f.endAt).toISOString() : '', remindAt: f.remindAt ? new Date(f.remindAt).toISOString() : '' }; if (mode === 'expense') return { ...f, amount: Number(f.amount || 0), title: f.title || '支出', date: f.date || todayIso(), category: f.category || 'other', currency: f.currency || 'JPY' }; if (mode === 'todo') return { ...f, status: f.status || 'open', priority: f.priority || 'middle', remindAt: f.remindAt ? new Date(f.remindAt).toISOString() : '' }; return f; }
 
