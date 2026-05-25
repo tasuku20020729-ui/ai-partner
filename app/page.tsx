@@ -653,11 +653,15 @@ function ShareBadge({ item, currentUserId }: { item: { userId?: string; visibili
 
 function SettingsView({ user, groupId, setGroupId, partnerName, partnerRelationship, savePartnerProfile, reload, notificationEnabled, setNotificationEnabled, pushStatus, enablePush, repairSearchIndex, saving, sharedStats }: any) {
   const [joinCode, setJoinCode] = useState('');
+  const [shareMode, setShareMode] = useState<'idle' | 'invite' | 'join'>('idle');
   const [partnerNameDraft, setPartnerNameDraft] = useState(partnerName);
   const [partnerRelationshipDraft, setPartnerRelationshipDraft] = useState(partnerRelationship);
   useEffect(() => setPartnerNameDraft(partnerName), [partnerName]);
   useEffect(() => setPartnerRelationshipDraft(partnerRelationship), [partnerRelationship]);
-  const createInvite = () => setGroupId(inviteCode());
+  const createInvite = () => {
+    setShareMode('invite');
+    setGroupId(inviteCode());
+  };
   const isSharing = Boolean(groupId && groupId !== newGroupId(user.uid));
   const displayInviteCode = isSharing ? groupId : '';
   const copyCode = async () => {
@@ -669,18 +673,23 @@ function SettingsView({ user, groupId, setGroupId, partnerName, partnerRelations
     const code = joinCode.trim();
     if (!code) return alert('招待コードを入力してください');
     setGroupId(code);
+    setShareMode('idle');
   };
   const leaveShare = () => {
     if (!confirm('共有を解除しますか？自分のデータは消えませんが、相手の共有データは表示されなくなります。')) return;
     setGroupId(newGroupId(user.uid));
+    setShareMode('idle');
   };
+  const showInvite = isSharing || shareMode === 'invite';
+  const showJoin = !isSharing && shareMode === 'join';
   return <Section title="設定">
     <div className="share-status-card">
       <div><p className="eyebrow">共有状態</p><h3>{isSharing ? `共有中: ${partnerName || '未設定'}（${partnerRelationship || '相手'}）` : '未共有'}</h3><p className="muted">共有データ {sharedStats.sharedCount}件 / 相手の共有データ {sharedStats.partnerCount}件 / メモ {sharedStats.notesCount}件</p></div>
       <button className="btn secondary" onClick={reload}>再読み込み</button>
     </div>
-    <div className="card share-card"><h3><Share2 size={18}/> 相手を招待する</h3><p className="muted">初期状態は共有なしです。共有したい時だけ招待コードを作成してください。</p><label>招待コード</label><input className="input code-input" readOnly value={displayInviteCode} placeholder="未共有" /><div className="grid"><button className="btn secondary" onClick={createInvite}><Share2 size={16}/> 新しいコードを作成</button><button className="btn secondary" disabled={!displayInviteCode} onClick={copyCode}><Copy size={16}/> コピー</button></div></div>
-    <div className="card share-card"><h3><Users size={18}/> 招待コードで参加する</h3><p className="muted">相手から受け取った招待コードを入力します。入力後、共有データを再読み込みします。</p><input className="input code-input" value={joinCode} onChange={e => setJoinCode(e.target.value)} placeholder="例: PAIR-7K3Q-A9FM" /><button className="btn" onClick={joinShare}>参加する</button></div>
+    {!isSharing && shareMode === 'idle' && <div className="card share-card share-start-card"><h3><Users size={18}/> 共有をはじめる</h3><p className="muted">初期状態は共有なしです。共有したい時だけ、招待コードを作成するか、相手から受け取ったコードで参加します。</p><div className="share-choice-grid"><button className="btn" onClick={createInvite}><Share2 size={16}/> 招待する</button><button className="btn secondary" onClick={() => setShareMode('join')}><Users size={16}/> 参加する</button></div></div>}
+    {showInvite && <div className="card share-card"><h3><Share2 size={18}/> 相手を招待する</h3><p className="muted">このコードを相手に送ると、同じ共有スペースに参加できます。</p><label>招待コード</label><input className="input code-input" readOnly value={displayInviteCode} placeholder="未共有" /><div className="grid"><button className="btn secondary" onClick={createInvite}><Share2 size={16}/> 新しいコードを作成</button><button className="btn secondary" disabled={!displayInviteCode} onClick={copyCode}><Copy size={16}/> コピー</button></div>{!isSharing && <button className="link edit-link" onClick={() => setShareMode('idle')}>戻る</button>}</div>}
+    {showJoin && <div className="card share-card"><h3><Users size={18}/> 招待コードで参加する</h3><p className="muted">相手から受け取った招待コードを入力します。入力後、共有データを再読み込みします。</p><input className="input code-input" value={joinCode} onChange={e => setJoinCode(e.target.value)} placeholder="例: PAIR-7K3Q-A9FM" /><div className="grid"><button className="btn" onClick={joinShare}>参加する</button><button className="btn secondary" onClick={() => setShareMode('idle')}>戻る</button></div></div>}
     <div className="card share-card"><h3>相手情報</h3><p className="muted">AIへの質問で使う名前と関係性です。例: 「さきの予定」「家族の支出」</p><input className="input" value={partnerNameDraft} onChange={e => setPartnerNameDraft(e.target.value)} placeholder="相手の名前（例: さき）" /><input className="input" value={partnerRelationshipDraft} onChange={e => setPartnerRelationshipDraft(e.target.value)} placeholder="関係性（例: 家族、友人、パートナー）" /><button className="btn secondary" onClick={() => savePartnerProfile(partnerNameDraft, partnerRelationshipDraft)}>相手情報を保存</button></div>
     <div className="card"><h3><Bell size={18}/> 通知</h3><label><input type="checkbox" checked={notificationEnabled} onChange={e => setNotificationEnabled(e.target.checked)} /> アプリ起動中の通知チェックを有効化</label><button className="btn" onClick={enablePush}>PWA Push通知を有効化</button><p className="muted">状態: {pushStatus}</p><p className="muted">iPhoneはSafariで開く → 共有 → ホーム画面に追加 → 追加したアイコンから開いて通知許可、の順に設定してください。</p></div>
     <div className="card"><h3>AI検索</h3><p className="muted">AIの検索結果が古い、または登録した内容が見つからない時だけ修復してください。</p><button className="btn secondary" disabled={saving} onClick={repairSearchIndex}>{saving ? '修復中...' : 'AI検索を修復'}</button></div>
