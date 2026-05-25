@@ -115,6 +115,7 @@ export default function Page() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [groupId, setGroupId] = useState('');
+  const [shareEnabled, setShareEnabled] = useState(false);
   const [partnerName, setPartnerName] = useState('');
   const [partnerRelationship, setPartnerRelationship] = useState('');
   const [dataLoading, setDataLoading] = useState(false);
@@ -146,19 +147,24 @@ export default function Page() {
         const userSnap = await getDoc(userRef);
         const savedGroupId = userSnap.data()?.groupId;
         const cachedGroupId = localStorage.getItem(`groupId_${u.uid}`);
-        const gid = savedGroupId || cachedGroupId || newGroupId(u.uid);
+        const savedShareEnabled = userSnap.data()?.shareEnabled === true;
+        const cachedShareEnabled = localStorage.getItem(`shareEnabled_${u.uid}`) === 'true';
+        const nextShareEnabled = savedShareEnabled || cachedShareEnabled;
+        const gid = nextShareEnabled ? (savedGroupId || cachedGroupId || newGroupId(u.uid)) : newGroupId(u.uid);
         const savedPartnerName = userSnap.data()?.partnerName;
         const savedPartnerRelationship = userSnap.data()?.partnerRelationship;
         const savedPartnerProfileConfigured = userSnap.data()?.partnerProfileConfigured;
         const cachedPartnerProfileConfigured = localStorage.getItem(`partnerProfileConfigured_${u.uid}`);
         setGroupId(gid);
+        setShareEnabled(nextShareEnabled);
         localStorage.setItem(`groupId_${u.uid}`, gid);
+        localStorage.setItem(`shareEnabled_${u.uid}`, nextShareEnabled ? 'true' : 'false');
         const nextPartnerName = partnerFieldValue(savedPartnerName || localStorage.getItem(`partnerName_${u.uid}`), savedPartnerProfileConfigured || cachedPartnerProfileConfigured);
         const nextPartnerRelationship = partnerFieldValue(savedPartnerRelationship || localStorage.getItem(`partnerRelationship_${u.uid}`), savedPartnerProfileConfigured || cachedPartnerProfileConfigured);
         setPartnerName(nextPartnerName);
         setPartnerRelationship(nextPartnerRelationship);
         setNotificationEnabled(localStorage.getItem(`notify_${u.uid}`) === 'on');
-        await setDoc(userRef, { name: u.displayName || u.email || 'User', email: u.email, defaultCurrency: 'JPY', groupId: gid, partnerName: nextPartnerName, partnerRelationship: nextPartnerRelationship, partnerProfileConfigured: Boolean(nextPartnerName || nextPartnerRelationship), updatedAt: new Date().toISOString() }, { merge: true });
+        await setDoc(userRef, { name: u.displayName || u.email || 'User', email: u.email, defaultCurrency: 'JPY', groupId: gid, shareEnabled: nextShareEnabled, partnerName: nextPartnerName, partnerRelationship: nextPartnerRelationship, partnerProfileConfigured: Boolean(nextPartnerName || nextPartnerRelationship), updatedAt: new Date().toISOString() }, { merge: true });
         await loadAll(u.uid, gid);
       }
     } catch (e) {
@@ -327,7 +333,7 @@ export default function Page() {
       {tab === 'expense' && <ExpenseView expenses={expenses} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} setAddMode={setAddMode} />}
       {tab === 'ai' && <AIView chat={chat} question={question} setQuestion={setQuestion} ask={askAI} saving={saving} />}
       {tab === 'notes' && <NotesView notes={sharedNotes} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} setAddMode={setAddMode} />}
-      {tab === 'settings' && <SettingsView user={user} groupId={groupId} setGroupId={saveGroupId} partnerName={partnerName} partnerRelationship={partnerRelationship} savePartnerProfile={savePartnerProfile} reload={() => loadAll()} notificationEnabled={notificationEnabled} setNotificationEnabled={enableNotifications} pushStatus={pushStatus} enablePush={enablePushNotifications} repairSearchIndex={repairSearchIndex} saving={saving} sharedStats={sharedStats} />}
+      {tab === 'settings' && <SettingsView user={user} groupId={groupId} shareEnabled={shareEnabled} setGroupId={saveGroupId} partnerName={partnerName} partnerRelationship={partnerRelationship} savePartnerProfile={savePartnerProfile} reload={() => loadAll()} notificationEnabled={notificationEnabled} setNotificationEnabled={enableNotifications} pushStatus={pushStatus} enablePush={enablePushNotifications} repairSearchIndex={repairSearchIndex} saving={saving} sharedStats={sharedStats} />}
     </main>
     <BottomNav tab={tab} setTab={setTab} />
     {datePickerOpen && <DateActionSheet selectedDate={selectedDate} close={() => setDatePickerOpen(false)} openAdd={openAddForDate} />}
@@ -381,13 +387,18 @@ export default function Page() {
       return;
     }
     const previousGroupId = groupId;
+    const previousShareEnabled = shareEnabled;
+    const nextShareEnabled = nextGroupId !== newGroupId(user.uid);
     setGroupId(nextGroupId);
+    setShareEnabled(nextShareEnabled);
     try {
-      await setDoc(doc(db, 'users', user.uid), { groupId: nextGroupId, updatedAt: new Date().toISOString() }, { merge: true });
+      await setDoc(doc(db, 'users', user.uid), { groupId: nextGroupId, shareEnabled: nextShareEnabled, updatedAt: new Date().toISOString() }, { merge: true });
       localStorage.setItem(`groupId_${user.uid}`, nextGroupId);
+      localStorage.setItem(`shareEnabled_${user.uid}`, nextShareEnabled ? 'true' : 'false');
       await loadAll(user.uid, nextGroupId);
     } catch (e) {
       setGroupId(previousGroupId);
+      setShareEnabled(previousShareEnabled);
       alert(e instanceof Error ? e.message : '共有IDの保存に失敗しました');
     }
   }
@@ -651,7 +662,7 @@ function ShareBadge({ item, currentUserId }: { item: { userId?: string; visibili
   return null;
 }
 
-function SettingsView({ user, groupId, setGroupId, partnerName, partnerRelationship, savePartnerProfile, reload, notificationEnabled, setNotificationEnabled, pushStatus, enablePush, repairSearchIndex, saving, sharedStats }: any) {
+function SettingsView({ user, groupId, shareEnabled, setGroupId, partnerName, partnerRelationship, savePartnerProfile, reload, notificationEnabled, setNotificationEnabled, pushStatus, enablePush, repairSearchIndex, saving, sharedStats }: any) {
   const [joinCode, setJoinCode] = useState('');
   const [shareMode, setShareMode] = useState<'idle' | 'invite' | 'join'>('idle');
   const [partnerNameDraft, setPartnerNameDraft] = useState(partnerName);
@@ -662,7 +673,7 @@ function SettingsView({ user, groupId, setGroupId, partnerName, partnerRelations
     setShareMode('invite');
     setGroupId(inviteCode());
   };
-  const isSharing = Boolean(groupId && groupId !== newGroupId(user.uid));
+  const isSharing = Boolean(shareEnabled && groupId && groupId !== newGroupId(user.uid));
   const displayInviteCode = isSharing ? groupId : '';
   const copyCode = async () => {
     if (!displayInviteCode) return alert('先に招待コードを作成してください');
