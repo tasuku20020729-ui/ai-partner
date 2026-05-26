@@ -1013,7 +1013,10 @@ function SettingsView({ user, groupId, shareEnabled, viewAllSpaces, activeSpaceN
     }
   };
   const updateMemberDraft = (spaceId: string, key: 'displayName' | 'relationships' | 'aliases', value: string) => {
-    setMemberDrafts(prev => ({ ...prev, [spaceId]: { displayName: '', relationships: '', aliases: '', ...(prev[spaceId] || {}), [key]: value } }));
+    setMemberDrafts(prev => {
+      const draft = prev[spaceId] || { displayName: '', relationships: '', aliases: '' };
+      return { ...prev, [spaceId]: { ...draft, [key]: value } };
+    });
   };
   return <Section title="設定">
     <div className="share-status-card">
