@@ -83,7 +83,38 @@ function toRagItem(type: AddMode | string, id: string, item: Record<string, any>
     };
   }
   const sourceType = type === 'diary' ? 'diary' : type === 'event' ? 'event' : type === 'todo' ? 'todo' : type === 'expense' ? 'expense' : 'anniversary';
-  const content = [item.content, item.description, item.memo, type === 'event' ? item.location : '', item.shopName].filter(Boolean).join('\n');
+  const todoDetail = type === 'todo' ? [
+    item.description ? `内容: ${item.description}` : '',
+    item.dueAt ? `期限: ${item.dueAt}` : '',
+    item.priority ? `優先度: ${priorityLabel[item.priority as keyof typeof priorityLabel] || item.priority}` : '',
+    item.status ? `状態: ${item.status === 'done' ? '完了' : '未完了'}` : '',
+    item.reminderEnabled && item.remindAt ? `リマインド: ${item.remindAt}` : ''
+  ].filter(Boolean).join('\n') : '';
+  const eventDetail = type === 'event' ? [
+    item.startAt ? `開始: ${item.startAt}` : '',
+    item.endAt ? `終了: ${item.endAt}` : '',
+    item.location ? `場所: ${item.location}` : '',
+    item.description ? `内容: ${item.description}` : '',
+    item.reminderEnabled && item.remindAt ? `リマインド: ${item.remindAt}` : ''
+  ].filter(Boolean).join('\n') : '';
+  const expenseDetail = type === 'expense' ? [
+    item.shopName ? `店名: ${item.shopName}` : '',
+    `金額: ${yen(Number(item.amountBase || item.amount || 0))}`,
+    item.currency && item.currency !== 'JPY' ? `元額: ${Number(item.amount || 0).toLocaleString()}${item.currency}` : '',
+    item.category ? `カテゴリ: ${categoryLabel[item.category as ExpenseCategory] || item.category}` : '',
+    item.paymentMethod ? `支払い方法: ${item.paymentMethod}` : '',
+    item.memo ? `メモ: ${item.memo}` : '',
+    item.receiptItems?.length ? `明細: ${item.receiptItems.join('、')}` : ''
+  ].filter(Boolean).join('\n') : '';
+  const diaryDetail = type === 'diary' ? [
+    item.mood ? `気分: ${item.mood}` : '',
+    item.tags?.length ? `タグ: ${item.tags.join('、')}` : ''
+  ].filter(Boolean).join('\n') : '';
+  const anniversaryDetail = type === 'anniversary' ? [
+    item.repeat ? `繰り返し: ${item.repeat === 'yearly' ? '毎年' : '一回'}` : '',
+    item.remindDaysBefore !== undefined ? `通知: ${item.remindDaysBefore}日前` : ''
+  ].filter(Boolean).join('\n') : '';
+  const content = [item.content, item.description, diaryDetail, eventDetail, todoDetail, expenseDetail, anniversaryDetail, item.memo, type === 'event' ? item.location : '', item.shopName].filter(Boolean).join('\n');
   return {
     id,
     type: sourceType,
@@ -104,12 +135,19 @@ function toRagItem(type: AddMode | string, id: string, item: Record<string, any>
       amount: item.amount,
       currency: item.currency,
       amountBase: item.amountBase,
+      paymentMethod: item.paymentMethod,
+      receiptItems: item.receiptItems,
       status: item.status,
       priority: item.priority,
+      reminderEnabled: item.reminderEnabled,
+      remindAt: item.remindAt,
       startAt: item.startAt,
       endAt: item.endAt,
       dueAt: item.dueAt,
-      repeat: item.repeat
+      location: item.location,
+      shopName: item.shopName,
+      repeat: item.repeat,
+      remindDaysBefore: item.remindDaysBefore
     }
   };
 }
