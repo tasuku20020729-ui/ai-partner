@@ -201,6 +201,169 @@ function filterExpenseCategory(q: string, expenses: any[]) {
   if (/娯楽|映画|ゲーム|ライブ|コンサート|イベント|本|漫画|サブスク|Netflix|Spotify|カラオケ|遊び|チケット/.test(q)) return expenses.filter((e:any)=>e.category === 'entertainment');
   return expenses;
 }
+function compactText(value: unknown) {
+  return String(value || '').toLowerCase().replace(/\s+/g, '');
+}
+function detailQuestion(q: string) {
+  return /詳しく|詳細|内容|説明|メモ|何を|なにを|どう|どんな|について|とは|中身|補足|深く|具体|場所|どこ|いつ|何時|金額|内訳|理由|用途/.test(q);
+}
+function looseDetailQuestion(q: string) {
+  return detailQuestion(q) || /何|なに|教えて|いくら/.test(q);
+}
+function detailHints(q: string) {
+  const explicit = Array.from(q.matchAll(/(.+?)(?:について|とは|の詳細|を詳しく|を教えて|の内容|の説明|の場所|の金額|の内訳)/g)).map(match => match[1]);
+  const words = q
+    .replace(/今日|本日|明日|明後日|昨日|一昨日|今週末|来週末|週末|今週|来週|先週|今月末|来月末|今月|来月|先月|今年|来年|去年|昨年|本年|日記|予定|スケジュール|イベント|ToDo|todo|タスク|やること|支出|出費|費用|お金|記念日|誕生日|メモ|共有メモ|ノート|未完了|完了済み|完了した|詳しく|詳細|内容|説明|メモ|何|なに|どう|どんな|について|とは|中身|補足|深く|具体|教えて|場所|どこ|いつ|何時|いくら|金額|内訳|理由|用途|期限|優先度|リマインド/g, ' ')
+    .split(/[\s、。・/／,，?？!！]+/)
+    .filter(word => word.length >= 2);
+  const stopWords = new Set(['今日', '本日', '明日', '明後日', '昨日', '一昨日', '今週末', '来週末', '週末', '今週', '来週', '先週', '今月末', '来月末', '今月', '来月', '先月', '今年', '来年', '去年', '昨年', '本年', '日記', '予定', 'スケジュール', 'イベント', 'todo', 'タスク', 'やること', '支出', '出費', '費用', 'お金', '記念日', '誕生日', 'メモ', '共有メモ', 'ノート']);
+  return Array.from(new Set([...explicit, ...words]
+    .map(word => compactText(word).replace(/の$/g, '').replace(/^(今日|本日|明日|明後日|昨日|一昨日|今週末|来週末|週末|今週|来週|先週|今月末|来月末|今月|来月|先月|今年|来年|去年|昨年|本年)/, ''))
+    .map(word => word.replace(/(日記|予定|スケジュール|イベント|todo|タスク|やること|支出|出費|費用|お金|記念日|誕生日|メモ|共有メモ|ノート)$/g, ''))
+    .filter(word => word && word.length >= 2 && !stopWords.has(word))));
+}
+function detailSearchText(kind: QuestionIntent, item: any) {
+  if (kind === 'expense') {
+    return [
+      item.title,
+      item.shopName,
+      item.memo,
+      item.category,
+      expenseCategoryLabel[item.category],
+      item.paymentMethod,
+      item.currency,
+      item.date,
+      ...(item.receiptItems || []),
+      item.ownerName,
+      item.spaceName
+    ].filter(Boolean).join(' ');
+  }
+  if (kind === 'event') return [item.title, item.description, item.location, item.startAt, item.endAt, item.ownerName, item.spaceName].filter(Boolean).join(' ');
+  if (kind === 'todo') return [item.title, item.description, item.ownerName, item.spaceName, item.dueAt].filter(Boolean).join(' ');
+  if (kind === 'diary') return [item.title, item.content, item.mood, ...(item.tags || []), item.date, item.ownerName, item.spaceName].filter(Boolean).join(' ');
+  if (kind === 'anniversary') return [item.title, item.date, item.repeat, item.ownerName, item.spaceName].filter(Boolean).join(' ');
+  if (kind === 'memo') return [item.title, item.content, item.createdByName, item.ownerName, item.spaceName].filter(Boolean).join(' ');
+  return '';
+}
+function detailScore(q: string, kind: QuestionIntent, item: any) {
+  const hints = detailHints(q);
+  if (!hints.length) return 1;
+  const haystack = compactText(detailSearchText(kind, item));
+  return hints.reduce((score, hint) => score + (haystack.includes(hint) ? hint.length : 0), 0);
+}
+function rankedDetails(q: string, kind: QuestionIntent, items: any[]) {
+  return items
+    .map(item => ({ item, score: detailScore(q, kind, item) }))
+    .filter(result => result.score > 0)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (kind === 'expense') return Number(b.item.amountBase || b.item.amount || 0) - Number(a.item.amountBase || a.item.amount || 0) || String(b.item.date || '').localeCompare(String(a.item.date || ''));
+      if (kind === 'event') return String(a.item.startAt || '').localeCompare(String(b.item.startAt || ''));
+      if (kind === 'todo') {
+        const priority = { high: 0, middle: 1, low: 2 } as Record<string, number>;
+        return (priority[a.item.priority] ?? 3) - (priority[b.item.priority] ?? 3) || String(a.item.dueAt || '').localeCompare(String(b.item.dueAt || ''));
+      }
+      return String(b.item.date || b.item.updatedAt || b.item.createdAt || '').localeCompare(String(a.item.date || a.item.updatedAt || a.item.createdAt || ''));
+    })
+    .map(result => result.item);
+}
+function detailCollection(kind: QuestionIntent, s: ReturnType<typeof scoped>) {
+  if (kind === 'expense') return s.expenses;
+  if (kind === 'event') return s.events;
+  if (kind === 'todo') return s.todos;
+  if (kind === 'diary') return s.diaries;
+  if (kind === 'anniversary') return s.anniversaries;
+  if (kind === 'memo') return s.sharedNotes;
+  return [];
+}
+function detailIntent(q: string, intent: QuestionIntent, s: ReturnType<typeof scoped>) {
+  const canUseLooseMatch = intent === 'unknown' || intent === 'out_of_scope';
+  const supported: QuestionIntent[] = ['expense', 'event', 'todo', 'diary', 'anniversary', 'memo'];
+  const hints = detailHints(q);
+  const expenseCategoryHints = new Set(['食費', '食事', '交通費', '日用品', '生活用品', 'デート代', '交際費', '医療費', '娯楽費', '旅行代', 'カテゴリ']);
+  const canUseExpenseLooseMatch = intent === 'expense' && looseDetailQuestion(q) && hints.length > 0 && !/合計|平均/.test(q) && !hints.every(hint => expenseCategoryHints.has(hint));
+  const canUseKnownLooseMatch = supported.includes(intent) && looseDetailQuestion(q) && hints.length > 0 && (intent !== 'expense' || canUseExpenseLooseMatch);
+  if (!(canUseLooseMatch ? looseDetailQuestion(q) : detailQuestion(q) || canUseKnownLooseMatch)) return null;
+  if (supported.includes(intent) && rankedDetails(q, intent, detailCollection(intent, s)).length) return intent;
+  const best = supported
+    .map(kind => ({ kind, max: Math.max(0, ...detailCollection(kind, s).map(item => detailScore(q, kind, item))) }))
+    .filter(result => result.max > 0)
+    .sort((a, b) => b.max - a.max)[0];
+  return best?.kind || null;
+}
+function todoDetailRequested(q: string) {
+  return detailQuestion(q) && /ToDo|todo|タスク|課題|やること|期限|提出|買う|準備|確認|支払/.test(q);
+}
+function todoHints(q: string) {
+  return detailHints(q);
+}
+function todoScore(q: string, todo: any) {
+  return detailScore(q, 'todo', todo);
+}
+function formatTodoDetail(todo: any) {
+  const fields = [
+    `タイトル: ${todo.title || 'ToDo'}`,
+    `状態: ${todo.status === 'done' ? '完了' : '未完了'}`,
+    todo.dueAt ? `期限: ${todo.dueAt}` : '',
+    `優先度: ${priorityLabel[todo.priority] || todo.priority || '-'}`,
+    todo.reminderEnabled && todo.remindAt ? `リマインド: ${formatDateTime(todo.remindAt)}` : '',
+    todo.description ? `内容: ${todo.description}` : '',
+    `登録者: ${todo.ownerName || '不明'}${todo.spaceName ? ` / ${todo.spaceName}` : ''}`
+  ].filter(Boolean);
+  return fields.join('\n');
+}
+function formatDetail(kind: QuestionIntent, item: any) {
+  if (kind === 'todo') return formatTodoDetail(item);
+  if (kind === 'event') return [
+    `予定: ${item.title || '予定'}`,
+    item.startAt ? `開始: ${formatDateTime(item.startAt)}` : '',
+    item.endAt ? `終了: ${formatDateTime(item.endAt)}` : '',
+    item.location ? `場所: ${item.location}` : '',
+    item.reminderEnabled && item.remindAt ? `リマインド: ${formatDateTime(item.remindAt)}` : '',
+    item.description ? `内容: ${item.description}` : '',
+    `登録者: ${item.ownerName || '不明'}${item.spaceName ? ` / ${item.spaceName}` : ''}`
+  ].filter(Boolean).join('\n');
+  if (kind === 'expense') return [
+    `支出: ${item.title || item.shopName || '支出'}`,
+    item.date ? `日付: ${item.date}` : '',
+    item.shopName ? `店名: ${item.shopName}` : '',
+    `金額: ${yen(Number(item.amountBase || item.amount || 0))}${item.currency && item.currency !== 'JPY' ? `（元額 ${Number(item.amount || 0).toLocaleString()}${item.currency}）` : ''}`,
+    `カテゴリ: ${expenseCategoryLabel[item.category] || item.category || 'その他'}`,
+    item.paymentMethod ? `支払い方法: ${item.paymentMethod}` : '',
+    item.memo ? `メモ: ${item.memo}` : '',
+    item.receiptItems?.length ? `明細: ${item.receiptItems.join('、')}` : '',
+    `登録者: ${item.ownerName || '不明'}${item.spaceName ? ` / ${item.spaceName}` : ''}`
+  ].filter(Boolean).join('\n');
+  if (kind === 'diary') return [
+    `日記: ${item.title || '日記'}`,
+    item.date ? `日付: ${item.date}` : '',
+    item.mood ? `気分: ${item.mood}` : '',
+    item.tags?.length ? `タグ: ${item.tags.join('、')}` : '',
+    item.content ? `内容: ${item.content}` : '',
+    `登録者: ${item.ownerName || '不明'}${item.spaceName ? ` / ${item.spaceName}` : ''}`
+  ].filter(Boolean).join('\n');
+  if (kind === 'anniversary') return [
+    `記念日: ${item.title || '記念日'}`,
+    item.date ? `日付: ${item.date}` : '',
+    `繰り返し: ${item.repeat === 'yearly' ? '毎年' : '一回'}`,
+    item.remindDaysBefore !== undefined ? `通知: ${item.remindDaysBefore}日前` : '',
+    `登録者: ${item.ownerName || '不明'}${item.spaceName ? ` / ${item.spaceName}` : ''}`
+  ].filter(Boolean).join('\n');
+  if (kind === 'memo') return [
+    `メモ: ${item.title || '共有メモ'}`,
+    item.content ? `内容: ${item.content}` : '',
+    item.updatedAt ? `更新: ${formatDateTime(item.updatedAt)}` : item.createdAt ? `作成: ${formatDateTime(item.createdAt)}` : '',
+    `登録者: ${item.createdByName || item.ownerName || '不明'}${item.spaceName ? ` / ${item.spaceName}` : ''}`
+  ].filter(Boolean).join('\n');
+  return '';
+}
+function detailAnswer(q: string, kind: QuestionIntent, items: any[], rangeLabel: string) {
+  const details = rankedDetails(q, kind, items);
+  if (!details.length) return `${rangeLabel}該当するデータの詳細は見つかりませんでした。名前やキーワードを少し具体的に入れてください。`;
+  const labels: Record<string, string> = { expense: '支出', event: '予定', todo: 'ToDo', diary: '日記', anniversary: '記念日', memo: 'メモ' };
+  const detailLines = details.slice(0, 5).map((item:any, index:number) => `${details.length > 1 ? `【${index + 1}】\n` : ''}${formatDetail(kind, item)}`).join('\n\n');
+  return `${rangeLabel}該当する${labels[kind] || 'データ'}の詳細です。\n${detailLines}`;
+}
 function classifyQuestion(q: string): QuestionIntent {
   const text = q.trim();
   if (!text) return 'unknown';
@@ -216,11 +379,14 @@ function classifyQuestion(q: string): QuestionIntent {
 function deterministicAnswer(body: Body) {
   const q = body.question || '';
   const intent = classifyQuestion(q);
-  if (intent === 'out_of_scope') return 'このAIは登録された日記・予定・ToDo・支出・記念日・共有メモについて回答します。生活データに関する質問を入力してください。';
   const s = scoped(body);
   const rangeLabel = s.range?.label ? `${s.range.label}の` : '';
+  const matchedDetailIntent = detailIntent(q, intent, s);
+  if (intent === 'out_of_scope' && !matchedDetailIntent) return 'このAIは登録された日記・予定・ToDo・支出・記念日・共有メモについて回答します。生活データに関する質問を入力してください。';
+  const effectiveIntent = matchedDetailIntent || intent;
 
-  if (intent === 'expense') {
+  if (effectiveIntent === 'expense') {
+    if (matchedDetailIntent === 'expense') return detailAnswer(q, 'expense', filterExpenseCategory(q, s.expenses), rangeLabel);
     const expenses = filterExpenseCategory(q, s.expenses).sort((a:any, b:any) => Number(b.amountBase || b.amount || 0) - Number(a.amountBase || a.amount || 0));
     const total = sumExpenses(expenses);
     const average = expenses.length ? total / expenses.length : 0;
@@ -234,34 +400,53 @@ function deterministicAnswer(body: Body) {
     return `${rangeLabel}参照可能な支出は ${expenses.length}件、合計 ${yen(total)} です。${expenses.length ? `平均は ${yen(average)} です。` : ''}${categoryLines ? `\n\nカテゴリ別:\n${categoryLines}` : ''}${detailLines ? `\n\n内訳:\n${detailLines}` : ''}`;
   }
 
-  if (intent === 'event') {
+  if (effectiveIntent === 'event') {
+    if (matchedDetailIntent === 'event') return detailAnswer(q, 'event', s.events, rangeLabel);
     const events = s.events.sort((a:any, b:any) => String(a.startAt || '').localeCompare(String(b.startAt || '')));
     const lines = events.slice(0, 20).map((e:any)=>`・${formatDateTime(e.startAt)} ${e.title || '予定'}${e.location ? ` @${e.location}` : ''}（${e.ownerName || '不明'}${e.spaceName ? ` / ${e.spaceName}` : ''}）`).join('\n');
     return lines ? `${rangeLabel}予定は ${events.length}件あります。\n${lines}` : `${rangeLabel}参照可能な予定はありません。`;
   }
 
-  if (intent === 'todo') {
+  if (effectiveIntent === 'todo') {
     const wantsDone = /完了済み|完了した/.test(q);
-    const todos = s.todos
-      .filter((t:any)=>wantsDone ? t.status === 'done' : t.status !== 'done')
+    const wantsOpen = /未完了|残って|残り|まだ|これから/.test(q);
+    const detail = todoDetailRequested(q) || matchedDetailIntent === 'todo';
+    const todoPool = s.todos.filter((t:any) => {
+      if (wantsDone) return t.status === 'done';
+      if (wantsOpen || !detail) return t.status !== 'done';
+      return true;
+    });
+    const scoredTodos = todoPool
+      .map((todo:any) => ({ todo, score: todoScore(q, todo) }))
+      .filter((item:any) => !detail || item.score > 0)
       .sort((a:any, b:any) => {
         const priority = { high: 0, middle: 1, low: 2 } as Record<string, number>;
-        return (priority[a.priority] ?? 3) - (priority[b.priority] ?? 3) || String(a.dueAt || '').localeCompare(String(b.dueAt || ''));
+        return b.score - a.score || (priority[a.todo.priority] ?? 3) - (priority[b.todo.priority] ?? 3) || String(a.todo.dueAt || '').localeCompare(String(b.todo.dueAt || ''));
       });
-    const lines = todos.slice(0, 20).map((t:any)=>`・${t.title}${t.dueAt ? ` 期限:${t.dueAt}` : ''} 優先度:${priorityLabel[t.priority] || t.priority || '-'}（${t.ownerName || '不明'}${t.spaceName ? ` / ${t.spaceName}` : ''}）`).join('\n');
+    const todos = scoredTodos.map((item:any) => item.todo);
+    if (detail) {
+      if (!todos.length) return `${rangeLabel}該当するToDoの詳細は見つかりませんでした。ToDo名やキーワードを少し具体的に入れてください。`;
+      const detailLines = todos.slice(0, 5).map((todo:any, index:number) => `${todos.length > 1 ? `【${index + 1}】\n` : ''}${formatTodoDetail(todo)}`).join('\n\n');
+      return `${rangeLabel}該当するToDoの詳細です。\n${detailLines}`;
+    }
+    const lines = todos.slice(0, 20).map((t:any)=>`・${t.title}${t.description ? `: ${t.description}` : ''}${t.dueAt ? ` 期限:${t.dueAt}` : ''} 優先度:${priorityLabel[t.priority] || t.priority || '-'}${t.reminderEnabled && t.remindAt ? ` リマインド:${formatDateTime(t.remindAt)}` : ''}（${t.ownerName || '不明'}${t.spaceName ? ` / ${t.spaceName}` : ''}）`).join('\n');
     return lines ? `${rangeLabel}${wantsDone ? '完了済み' : '未完了'}ToDoは ${todos.length}件あります。\n${lines}` : `${rangeLabel}${wantsDone ? '完了済み' : '未完了'}ToDoはありません。`;
   }
 
-  if (intent === 'anniversary') {
+  if (effectiveIntent === 'anniversary') {
+    if (matchedDetailIntent === 'anniversary') return detailAnswer(q, 'anniversary', s.anniversaries, rangeLabel);
     const anniversaries = (s.anniversaries || []).sort((a:any, b:any) => String(a.date || '').localeCompare(String(b.date || '')));
     const lines = anniversaries.map((a:any)=>`・${a.date} ${a.title}${a.repeat === 'yearly' ? '（毎年）' : ''}`).join('\n');
     return lines || '登録済みの記念日はありません。';
   }
 
-  if (intent === 'memo') {
+  if (effectiveIntent === 'memo') {
+    if (matchedDetailIntent === 'memo') return detailAnswer(q, 'memo', s.sharedNotes, rangeLabel);
     const lines = (s.sharedNotes || []).map((n:any)=>`・${n.title}: ${n.content}`).join('\n');
     return lines || '共有メモはありません。';
   }
+
+  if (effectiveIntent === 'diary' && matchedDetailIntent === 'diary') return detailAnswer(q, 'diary', s.diaries, rangeLabel);
 
   return null;
 }
@@ -321,7 +506,7 @@ function fallbackAnswer(body: Body) {
     return list ? `${rangeLabel}予定です。\n${list}` : `${rangeLabel}参照可能な予定はありません。`;
   }
   if (/ToDo|todo|課題|やる|未完了/.test(q)) {
-    const list = s.todos.filter((t:any)=>t.status!=='done').map((t:any)=>`・${t.title}${t.dueAt ? ` 期限:${t.dueAt}` : ''}（${t.ownerName || '不明'}）`).join('\n');
+    const list = s.todos.filter((t:any)=>t.status!=='done').map((t:any)=>`・${t.title}${t.description ? `: ${t.description}` : ''}${t.dueAt ? ` 期限:${t.dueAt}` : ''}（${t.ownerName || '不明'}）`).join('\n');
     return list || '未完了ToDoはありません。';
   }
   if (/記念日|誕生日/.test(q)) return (s.anniversaries || []).map((a:any)=>`・${a.date} ${a.title}`).join('\n') || '登録済みの記念日はありません。';
@@ -377,7 +562,7 @@ export async function POST(req: Request) {
   const response = await client.responses.create({
     model,
     input: [
-      { role: 'system', content: `あなたはAI生活管理アプリのAIです。日記・予定・ToDo・支出・記念日・共有メモだけを根拠に日本語で回答します。今日=${new Date().toLocaleDateString('ja-JP',{timeZone:'Asia/Tokyo'})}。相手の名前=${body.partnerName || '未設定'}。相手との関係性=${body.partnerRelationship || '未設定'}。分類済み意図=${intent}。入力データ以外を推測しない。支出はamountBase(JPY)で計算し、必要なら内訳を示す。相手の名前・関係性・メンバーのaliases/relationshipLabelsで質問された場合は該当メンバーのデータとして扱う。intent=diary または曖昧な思い出検索・感情・キーワード検索ではRAG結果を優先し、日付や金額の厳密集計は構造化データを優先する。intent=out_of_scopeなら生活データに関する質問だけ回答できると伝える。` },
+      { role: 'system', content: `あなたはAI生活管理アプリのAIです。日記・予定・ToDo・支出・記念日・共有メモだけを根拠に日本語で回答します。今日=${new Date().toLocaleDateString('ja-JP',{timeZone:'Asia/Tokyo'})}。相手の名前=${body.partnerName || '未設定'}。相手との関係性=${body.partnerRelationship || '未設定'}。分類済み意図=${intent}。入力データ以外を推測しない。支出はamountBase(JPY)で計算し、必要なら内訳を示す。詳細質問では各種類の詳細項目を必ず確認する。日記はtitle/content/mood/tags/date、予定はtitle/description/location/startAt/endAt/remindAt、ToDoはtitle/description/dueAt/priority/status/remindAt、支出はtitle/shopName/memo/category/amount/amountBase/currency/paymentMethod/receiptItems、記念日はtitle/date/repeat/remindDaysBefore、メモはtitle/contentを具体的に答える。相手の名前・関係性・メンバーのaliases/relationshipLabelsで質問された場合は該当メンバーのデータとして扱う。intent=diary または曖昧な思い出検索・感情・キーワード検索ではRAG結果を優先し、日付や金額の厳密集計は構造化データを優先する。intent=out_of_scopeなら生活データに関する質問だけ回答できると伝える。` },
       { role: 'user', content: `質問: ${body.question}
 
 期間推定: ${filtered.range ? `${iso(filtered.range.start)}〜${iso(filtered.range.end)}` : '指定なし'}
