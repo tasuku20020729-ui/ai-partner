@@ -7,7 +7,7 @@ export async function POST(req: Request) {
   try {
     const auth = await requireAuth(req);
     const item = ragUpsertSchema.parse(await req.json());
-    if (item.groupId !== auth.groupId || item.userId !== auth.uid) return unauthorized();
+    if (!auth.spaceIds.includes(item.groupId) || item.userId !== auth.uid) return unauthorized();
     if (item.aiReadable === false) return Response.json({ skipped: true, reason: 'aiReadable=false' });
     const text = buildRagText(item);
     const embedding = await embedText(text);
@@ -17,6 +17,8 @@ export async function POST(req: Request) {
       userId: item.userId || null,
       ownerName: item.ownerName || '',
       groupId: item.groupId,
+      spaceId: item.spaceId || item.groupId,
+      spaceName: item.spaceName || '',
       visibility: item.visibility || 'private',
       aiReadable: Boolean(item.aiReadable ?? true),
       date: item.date || '',

@@ -4,7 +4,7 @@ import { adminDb } from '@/lib/firebaseAdmin';
 import { cosineSimilarity, embedText } from '@/lib/rag';
 import { requireAuth, unauthorized } from '@/lib/serverAuth';
 
-type Body = { question: string; partnerName?: string; partnerRelationship?: string; currentUserId?: string; groupId?: string; data: any };
+type Body = { question: string; partnerName?: string; partnerRelationship?: string; currentUserId?: string; groupId?: string; spaceIds?: string[]; data: any };
 type QuestionIntent = 'expense' | 'event' | 'todo' | 'diary' | 'memo' | 'anniversary' | 'out_of_scope' | 'unknown';
 const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 const DAY = 86400000;
@@ -136,26 +136,52 @@ function wantsPartnerOwner(q: string, partnerName?: string, partnerRelationship?
   if (partnerName && new RegExp(`${escapeRegExp(partnerName)}(の|が|は|だけ)`).test(q)) return true;
   return Boolean(partnerRelationship && new RegExp(`${escapeRegExp(partnerRelationship)}(の|が|は|だけ)`).test(q));
 }
-function ownerMatch(item: any, q: string, partnerName?: string, partnerRelationship?: string, currentUserId?: string) {
+function mentionedMemberIds(q: string, members: any[] = []) {
+  const hints = Array.from(q.matchAll(/([一-龥ぁ-んァ-ヶA-Za-z0-9]+)の/g)).map(match => match[1]).filter(Boolean);
+  return Array.from(new Set(members.filter((member:any) => {
+    const names = [member.displayName, ...(member.aliases || []), ...(member.relationshipLabels || [])].map(value => String(value || '').trim()).filter(Boolean);
+    return names.some(name => q.includes(name) || hints.some(hint => name.includes(hint) || hint.includes(name)));
+  }).map((member:any) => String(member.userId || '')).filter(Boolean)));
+}
+function ownerMatch(item: any, q: string, partnerName?: string, partnerRelationship?: string, currentUserId?: string, members: any[] = []) {
   if (wantsAllOwners(q)) return true;
+  const memberIds = mentionedMemberIds(q, members);
+  if (memberIds.length) return memberIds.includes(String(item.userId || item.createdBy || ''));
   if (item.ownerName && q.includes(item.ownerName)) return true;
   if (wantsPartnerOwner(q, partnerName, partnerRelationship)) return item.userId !== currentUserId;
   if (wantsSelfOwner(q)) return item.userId === currentUserId;
   if (item.ownerName && /さん|くん|ちゃん/.test(q)) return q.includes(item.ownerName);
   return true;
 }
+function mentionedSpaceNames(q: string, data: any) {
+  const items = [
+    ...(data.diaries || []),
+    ...(data.events || []),
+    ...(data.todos || []),
+    ...(data.expenses || []),
+    ...(data.anniversaries || []),
+    ...(data.sharedNotes || [])
+  ];
+  const hints = Array.from(q.matchAll(/([一-龥ぁ-んァ-ヶA-Za-z0-9]+)の/g)).map(match => match[1]).filter(Boolean);
+  return Array.from(new Set(items.map((item:any) => String(item.spaceName || '')).filter(name => name && (q.includes(name) || hints.some(hint => name.includes(hint) || hint.includes(name))))));
+}
+function spaceMatch(item: any, spaces: string[]) {
+  return !spaces.length || spaces.includes(String(item.spaceName || ''));
+}
 function scoped(body: Body) {
   const q = body.question || '';
   const range = rangeFromQuestion(q);
   const data = body.data || {};
+  const spaces = mentionedSpaceNames(q, data);
+  const members = data.members || [];
   return {
     range,
-    diaries: (data.diaries || []).filter((d:any)=>inRange(d.date, range) && ownerMatch(d, q, body.partnerName, body.partnerRelationship, body.currentUserId)),
-    events: (data.events || []).filter((e:any)=>inRange(e.startAt, range) && ownerMatch(e, q, body.partnerName, body.partnerRelationship, body.currentUserId)),
-    todos: (data.todos || []).filter((t:any)=>inRange(t.dueAt || t.createdAt, range) && ownerMatch(t, q, body.partnerName, body.partnerRelationship, body.currentUserId)),
-    expenses: (data.expenses || []).filter((e:any)=>inRange(e.date, range) && ownerMatch(e, q, body.partnerName, body.partnerRelationship, body.currentUserId)),
-    anniversaries: data.anniversaries || [],
-    sharedNotes: data.sharedNotes || []
+    diaries: (data.diaries || []).filter((d:any)=>spaceMatch(d, spaces) && inRange(d.date, range) && ownerMatch(d, q, body.partnerName, body.partnerRelationship, body.currentUserId, members)),
+    events: (data.events || []).filter((e:any)=>spaceMatch(e, spaces) && inRange(e.startAt, range) && ownerMatch(e, q, body.partnerName, body.partnerRelationship, body.currentUserId, members)),
+    todos: (data.todos || []).filter((t:any)=>spaceMatch(t, spaces) && inRange(t.dueAt || t.createdAt, range) && ownerMatch(t, q, body.partnerName, body.partnerRelationship, body.currentUserId, members)),
+    expenses: (data.expenses || []).filter((e:any)=>spaceMatch(e, spaces) && inRange(e.date, range) && ownerMatch(e, q, body.partnerName, body.partnerRelationship, body.currentUserId, members)),
+    anniversaries: (data.anniversaries || []).filter((a:any)=>spaceMatch(a, spaces)),
+    sharedNotes: (data.sharedNotes || []).filter((n:any)=>spaceMatch(n, spaces))
   };
 }
 function sumExpenses(list: any[]) { return list.reduce((s, e) => s + Number(e.amountBase || e.amount || 0), 0); }
@@ -204,13 +230,13 @@ function deterministicAnswer(body: Body) {
       return acc;
     }, {});
     const categoryLines = Object.entries(categoryTotals).sort((a, b) => b[1] - a[1]).map(([k, v]) => `・${k}: ${yen(v)}`).join('\n');
-    const detailLines = expenses.slice(0, 12).map((e:any)=>`・${e.date || ''} ${e.title || e.shopName || '支出'}: ${yen(Number(e.amountBase || e.amount || 0))}${e.currency && e.currency !== 'JPY' ? `（元額 ${Number(e.amount || 0).toLocaleString()}${e.currency}）` : ''}`).join('\n');
+    const detailLines = expenses.slice(0, 12).map((e:any)=>`・${e.date || ''} ${e.title || e.shopName || '支出'}: ${yen(Number(e.amountBase || e.amount || 0))}${e.spaceName ? ` / ${e.spaceName}` : ''}${e.currency && e.currency !== 'JPY' ? `（元額 ${Number(e.amount || 0).toLocaleString()}${e.currency}）` : ''}`).join('\n');
     return `${rangeLabel}参照可能な支出は ${expenses.length}件、合計 ${yen(total)} です。${expenses.length ? `平均は ${yen(average)} です。` : ''}${categoryLines ? `\n\nカテゴリ別:\n${categoryLines}` : ''}${detailLines ? `\n\n内訳:\n${detailLines}` : ''}`;
   }
 
   if (intent === 'event') {
     const events = s.events.sort((a:any, b:any) => String(a.startAt || '').localeCompare(String(b.startAt || '')));
-    const lines = events.slice(0, 20).map((e:any)=>`・${formatDateTime(e.startAt)} ${e.title || '予定'}${e.location ? ` @${e.location}` : ''}（${e.ownerName || '不明'}）`).join('\n');
+    const lines = events.slice(0, 20).map((e:any)=>`・${formatDateTime(e.startAt)} ${e.title || '予定'}${e.location ? ` @${e.location}` : ''}（${e.ownerName || '不明'}${e.spaceName ? ` / ${e.spaceName}` : ''}）`).join('\n');
     return lines ? `${rangeLabel}予定は ${events.length}件あります。\n${lines}` : `${rangeLabel}参照可能な予定はありません。`;
   }
 
@@ -222,7 +248,7 @@ function deterministicAnswer(body: Body) {
         const priority = { high: 0, middle: 1, low: 2 } as Record<string, number>;
         return (priority[a.priority] ?? 3) - (priority[b.priority] ?? 3) || String(a.dueAt || '').localeCompare(String(b.dueAt || ''));
       });
-    const lines = todos.slice(0, 20).map((t:any)=>`・${t.title}${t.dueAt ? ` 期限:${t.dueAt}` : ''} 優先度:${priorityLabel[t.priority] || t.priority || '-'}（${t.ownerName || '不明'}）`).join('\n');
+    const lines = todos.slice(0, 20).map((t:any)=>`・${t.title}${t.dueAt ? ` 期限:${t.dueAt}` : ''} 優先度:${priorityLabel[t.priority] || t.priority || '-'}（${t.ownerName || '不明'}${t.spaceName ? ` / ${t.spaceName}` : ''}）`).join('\n');
     return lines ? `${rangeLabel}${wantsDone ? '完了済み' : '未完了'}ToDoは ${todos.length}件あります。\n${lines}` : `${rangeLabel}${wantsDone ? '完了済み' : '未完了'}ToDoはありません。`;
   }
 
@@ -244,15 +270,21 @@ async function searchRagMemory(body: Body) {
   if (!body.groupId || !process.env.OPENAI_API_KEY) return { results: [] as any[], unavailable: true };
   try {
     const qEmbedding = await embedText(body.question);
-    const snap = await adminDb().collection('aiMemory').where('groupId', '==', body.groupId).get();
+    const targetSpaceIds = Array.from(new Set((body.spaceIds?.length ? body.spaceIds : [body.groupId]).filter(Boolean))).slice(0, 30);
+    const snaps = await Promise.all(targetSpaceIds.map(spaceId => adminDb().collection('aiMemory').where('groupId', '==', spaceId).get()));
     const wantsAll = wantsAllOwners(body.question);
     const wantsPartner = wantsPartnerOwner(body.question, body.partnerName, body.partnerRelationship);
     const wantsSelf = wantsSelfOwner(body.question);
-    const candidates = snap.docs.map(d => ({ id: d.id, ...d.data() } as any)).filter((m:any) => {
+    const memberIds = mentionedMemberIds(body.question, body.data?.members || []);
+    const hints = Array.from(body.question.matchAll(/([一-龥ぁ-んァ-ヶA-Za-z0-9]+)の/g)).map(match => match[1]).filter(Boolean);
+    const mentionedSpaces = Array.from(new Set(snaps.flatMap(snap => snap.docs.map(d => String(d.data().spaceName || ''))).filter(name => name && (body.question.includes(name) || hints.some(hint => name.includes(hint) || hint.includes(name))))));
+    const candidates = snaps.flatMap(snap => snap.docs.map(d => ({ id: d.id, ...d.data() } as any))).filter((m:any) => {
       if (m.aiReadable === false) return false;
+      if (mentionedSpaces.length && !mentionedSpaces.includes(String(m.spaceName || ''))) return false;
       const isMine = m.userId === body.currentUserId;
       if (!isMine && m.visibility !== 'shared') return false;
       if (wantsAll) return true;
+      if (memberIds.length) return memberIds.includes(String(m.userId || ''));
       if (m.ownerName && body.question.includes(m.ownerName)) return true;
       if (wantsPartner) return !isMine;
       if (wantsSelf) return isMine;
@@ -313,7 +345,8 @@ export async function POST(req: Request) {
     if (invalid) return invalid;
     throw e;
   }
-  const body = { ...rawBody, currentUserId: auth.uid, groupId: auth.groupId };
+  const requestedSpaceIds = rawBody.spaceIds?.filter(spaceId => auth.spaceIds.includes(spaceId));
+  const body = { ...rawBody, currentUserId: auth.uid, groupId: auth.groupId, spaceIds: requestedSpaceIds?.length ? requestedSpaceIds : [auth.groupId] };
   const intent = classifyQuestion(body.question || '');
   const filtered = scoped(body);
   const exactAnswer = deterministicAnswer(body);
@@ -327,7 +360,8 @@ export async function POST(req: Request) {
     todos: filtered.todos.slice(0, 100),
     expenses: filtered.expenses.slice(0, 160),
     anniversaries: filtered.anniversaries.slice(0, 50),
-    sharedNotes: filtered.sharedNotes.slice(0, 50)
+    sharedNotes: filtered.sharedNotes.slice(0, 50),
+    members: (body.data?.members || []).slice(0, 100)
   };
   const ragContext = rag.results.map((m:any, i:number) => ({
     rank: i + 1,
@@ -335,6 +369,7 @@ export async function POST(req: Request) {
     sourceType: m.sourceType,
     sourceId: m.sourceId,
     ownerName: m.ownerName,
+    spaceName: m.spaceName,
     date: m.date,
     title: m.title,
     text: m.contentText
@@ -342,7 +377,7 @@ export async function POST(req: Request) {
   const response = await client.responses.create({
     model,
     input: [
-      { role: 'system', content: `あなたはAI生活管理アプリのAIです。日記・予定・ToDo・支出・記念日・共有メモだけを根拠に日本語で回答します。今日=${new Date().toLocaleDateString('ja-JP',{timeZone:'Asia/Tokyo'})}。相手の名前=${body.partnerName || '未設定'}。相手との関係性=${body.partnerRelationship || '彼女/彼氏'}。分類済み意図=${intent}。入力データ以外を推測しない。支出はamountBase(JPY)で計算し、必要なら内訳を示す。相手の名前や関係性で質問された場合は相手のデータとして扱う。intent=diary または曖昧な思い出検索・感情・キーワード検索ではRAG結果を優先し、日付や金額の厳密集計は構造化データを優先する。intent=out_of_scopeなら生活データに関する質問だけ回答できると伝える。` },
+      { role: 'system', content: `あなたはAI生活管理アプリのAIです。日記・予定・ToDo・支出・記念日・共有メモだけを根拠に日本語で回答します。今日=${new Date().toLocaleDateString('ja-JP',{timeZone:'Asia/Tokyo'})}。相手の名前=${body.partnerName || '未設定'}。相手との関係性=${body.partnerRelationship || '未設定'}。分類済み意図=${intent}。入力データ以外を推測しない。支出はamountBase(JPY)で計算し、必要なら内訳を示す。相手の名前・関係性・メンバーのaliases/relationshipLabelsで質問された場合は該当メンバーのデータとして扱う。intent=diary または曖昧な思い出検索・感情・キーワード検索ではRAG結果を優先し、日付や金額の厳密集計は構造化データを優先する。intent=out_of_scopeなら生活データに関する質問だけ回答できると伝える。` },
       { role: 'user', content: `質問: ${body.question}
 
 期間推定: ${filtered.range ? `${iso(filtered.range.start)}〜${iso(filtered.range.end)}` : '指定なし'}

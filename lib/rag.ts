@@ -8,6 +8,8 @@ export type RagUpsertItem = {
   userId?: string;
   ownerName?: string;
   groupId: string;
+  spaceId?: string;
+  spaceName?: string;
   visibility?: 'private' | 'shared';
   aiReadable?: boolean;
   date?: string;

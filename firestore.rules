@@ -13,12 +13,59 @@ service cloud.firestore {
       return signedIn() && resource.data.createdBy == request.auth.uid;
     }
     function inMyGroup(data) {
-      return signedIn() && data.groupId == userGroup();
+      return signedIn()
+        && exists(/databases/$(database)/documents/spaces/$(data.groupId)/members/$(request.auth.uid));
     }
     function readableShared() {
       return inMyGroup(resource.data) && resource.data.visibility == 'shared';
     }
     match /users/{userId} { allow read, write: if ownUser(userId); }
+    match /invites/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && request.resource.data.createdBy == request.auth.uid
+        && exists(/databases/$(database)/documents/spaces/$(request.resource.data.spaceId)/members/$(request.auth.uid));
+      allow update: if signedIn()
+        && resource.data.status == 'active'
+        && request.resource.data.spaceId == resource.data.spaceId
+        && (
+          resource.data.createdBy == request.auth.uid
+          || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['usedCount', 'updatedAt'])
+        );
+      allow delete: if signedIn() && resource.data.createdBy == request.auth.uid;
+    }
+    match /spaces/{spaceId} {
+      allow read: if signedIn()
+        && (resource.data.ownerId == request.auth.uid
+          || exists(/databases/$(database)/documents/spaces/$(spaceId)/members/$(request.auth.uid)));
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid;
+      allow update: if signedIn()
+        && resource.data.ownerId == request.auth.uid
+        && request.resource.data.ownerId == request.auth.uid;
+      allow delete: if false;
+      match /members/{memberId} {
+        allow read: if signedIn()
+          && (resource.data.userId == request.auth.uid
+            || memberId == request.auth.uid
+            || exists(/databases/$(database)/documents/spaces/$(spaceId)/members/$(request.auth.uid)));
+        allow create: if signedIn()
+          && memberId == request.auth.uid
+          && request.resource.data.userId == request.auth.uid;
+        allow update: if signedIn()
+          && memberId == request.auth.uid
+          && resource.data.userId == request.auth.uid
+          && request.resource.data.userId == request.auth.uid;
+        allow delete: if signedIn()
+          && memberId == request.auth.uid
+          && resource.data.userId == request.auth.uid;
+      }
+    }
+    match /{path=**}/members/{memberId} {
+      allow read: if signedIn()
+        && resource.data.userId == request.auth.uid;
+    }
     match /pushTokens/{tokenId} {
       allow create: if signedIn()
         && request.resource.data.userId == request.auth.uid

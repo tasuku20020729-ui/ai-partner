@@ -12,7 +12,7 @@ export async function POST(req: Request) {
     let skipped = 0;
     for (const item of items) {
       if (item.aiReadable === false) { skipped++; continue; }
-      if (item.groupId !== auth.groupId || item.userId !== auth.uid) { skipped++; continue; }
+      if (!auth.spaceIds.includes(item.groupId) || item.userId !== auth.uid) { skipped++; continue; }
       const text = buildRagText(item);
       const embedding = await embedText(text);
       await db.collection('aiMemory').doc(ragDocId(item.type, item.id)).set({
@@ -21,6 +21,8 @@ export async function POST(req: Request) {
         userId: item.userId || null,
         ownerName: item.ownerName || '',
         groupId: item.groupId,
+        spaceId: item.spaceId || item.groupId,
+        spaceName: item.spaceName || '',
         visibility: item.visibility || 'private',
         aiReadable: Boolean(item.aiReadable ?? true),
         date: item.date || '',
