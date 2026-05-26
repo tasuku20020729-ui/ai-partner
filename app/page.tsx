@@ -568,7 +568,7 @@ export default function Page() {
       setSpaces(prev => mergeDocs<SpaceSummary>(prev, [{ id: spaceId, name: spaceName, type }]).sort((a, b) => Number(a.type !== 'personal') - Number(b.type !== 'personal') || a.name.localeCompare(b.name, 'ja')));
       await loadAll(user.uid, spaceId);
       await loadJoinedSpaces(user.uid, newGroupId(user.uid), nextJoinedSpaceIds);
-      return true;
+      return spaceId;
     } catch (e) {
       setGroupId(previousGroupId);
       setShareEnabled(previousShareEnabled);
@@ -580,10 +580,12 @@ export default function Page() {
       setSaving(false);
     }
   }
-  async function createInviteForActiveSpace() {
+  async function createInviteForActiveSpace(targetSpaceId?: string) {
     if (!user) return '';
-    if (!shareEnabled || groupId === newGroupId(user.uid)) {
-      alert('先に共有スペースを作成してください');
+    const spaceId = targetSpaceId || groupId;
+    const targetSpace = spaces.find(space => space.id === spaceId);
+    if (!spaceId || spaceId === newGroupId(user.uid) || targetSpace?.type === 'personal') {
+      alert('先に招待する共有スペースを選択してください');
       return '';
     }
     setSaving(true);
@@ -595,8 +597,8 @@ export default function Page() {
       await setDoc(doc(db, 'invites', code), {
         id: code,
         code,
-        spaceId: groupId,
-        spaceName: activeSpaceName || '共有スペース',
+        spaceId,
+        spaceName: targetSpace?.name || activeSpaceName || '共有スペース',
         createdBy: user.uid,
         status: 'active',
         usedCount: 0,
@@ -1069,37 +1071,63 @@ function ShareBadge({ item, currentUserId }: { item: { userId?: string; visibili
   return null;
 }
 
-function SettingsView({ user, groupId, shareEnabled, activeSpaceName, spaces, spaceMembers, setGroupId, createSpace, renameSpace, leaveSpace, createInvite, revokeInvite, joinInvite, partnerName, partnerRelationship, savePartnerProfile, saveMemberProfile, reload, notificationEnabled, setNotificationEnabled, pushStatus, enablePush, repairSearchIndex, saving, sharedStats }: any) {
+function SettingsView({ user, groupId, shareEnabled, activeSpaceName, spaces, spaceMembers, setGroupId, createSpace, renameSpace, leaveSpace, createInvite, revokeInvite, joinInvite, saveMemberProfile, reload, notificationEnabled, setNotificationEnabled, pushStatus, enablePush, repairSearchIndex, saving, sharedStats }: any) {
   const [joinCode, setJoinCode] = useState('');
   const [inviteDraft, setInviteDraft] = useState('');
+  const [inviteSpaceId, setInviteSpaceId] = useState('');
   const [shareMode, setShareMode] = useState<'idle' | 'invite' | 'join'>('idle');
   const [spaceNameDraft, setSpaceNameDraft] = useState('');
   const [spaceNameDrafts, setSpaceNameDrafts] = useState<Record<string, string>>({});
   const [spaceTypeDraft, setSpaceTypeDraft] = useState<SpaceType>('group');
-  const [partnerNameDraft, setPartnerNameDraft] = useState(partnerName);
-  const [partnerRelationshipDraft, setPartnerRelationshipDraft] = useState(partnerRelationship);
   const [memberDrafts, setMemberDrafts] = useState<Record<string, { displayName: string; relationships: string; aliases: string }>>({});
-  useEffect(() => setPartnerNameDraft(partnerName), [partnerName]);
-  useEffect(() => setPartnerRelationshipDraft(partnerRelationship), [partnerRelationship]);
+  const spaceOptions = spaces.length ? spaces : [{ id: newGroupId(user.uid), name: personalSpaceName, type: 'personal' as SpaceType }];
+  const shareSpaces = spaceOptions.filter((space: SpaceSummary) => space.type !== 'personal');
+  const initialManagedSpaceId = groupId !== newGroupId(user.uid) ? groupId : shareSpaces[0]?.id || spaceOptions[0]?.id || newGroupId(user.uid);
+  const [managedSpaceId, setManagedSpaceId] = useState(initialManagedSpaceId);
   useEffect(() => setSpaceNameDrafts(Object.fromEntries((spaces || []).map((space: SpaceSummary) => [space.id, space.name]))), [spaces]);
+  useEffect(() => {
+    if (!spaceOptions.some((space: SpaceSummary) => space.id === managedSpaceId)) {
+      setManagedSpaceId(initialManagedSpaceId);
+    }
+  }, [initialManagedSpaceId, managedSpaceId, spaceOptions]);
+  useEffect(() => {
+    if (inviteSpaceId && inviteSpaceId !== managedSpaceId) {
+      setInviteDraft('');
+      setInviteSpaceId('');
+    }
+  }, [inviteSpaceId, managedSpaceId]);
   useEffect(() => {
     const mine = (spaceMembers || []).filter((member: MemberProfile) => member.userId === user.uid);
     setMemberDrafts(Object.fromEntries(mine.map((member: MemberProfile) => [member.spaceId, { displayName: member.displayName || '', relationships: listToCsv(member.relationshipLabels), aliases: listToCsv(member.aliases) }])));
   }, [spaceMembers, user.uid]);
   const isSharing = Boolean(shareEnabled && groupId && groupId !== newGroupId(user.uid));
+  const managedSpace = (spaceOptions.find((space: SpaceSummary) => space.id === managedSpaceId) || spaceOptions[0]) as SpaceSummary;
+  const managedSpaceKey = managedSpace.id;
+  const managedSpaceName = managedSpace.name || personalSpaceName;
+  const managedMembers = (spaceMembers || []).filter((member: MemberProfile) => member.spaceId === managedSpaceKey);
+  const managedMine = managedMembers.find((member: MemberProfile) => member.userId === user.uid);
+  const memberDraft = memberDrafts[managedSpaceKey] || { displayName: managedMine?.displayName || '', relationships: listToCsv(managedMine?.relationshipLabels), aliases: listToCsv(managedMine?.aliases) };
+  const isManagedPersonal = managedSpace.type === 'personal';
   const copyCode = async () => {
     if (!inviteDraft) return alert('先に招待コードを作成してください');
     await navigator.clipboard?.writeText(inviteDraft);
     alert('招待コードをコピーしました');
   };
   const issueInvite = async () => {
-    const code = await createInvite();
-    if (code) setInviteDraft(code);
+    if (!managedSpace || isManagedPersonal) return alert('招待するグループを選択してください');
+    const code = await createInvite(managedSpaceKey);
+    if (code) {
+      setInviteDraft(code);
+      setInviteSpaceId(managedSpaceKey);
+    }
   };
   const revokeCurrentInvite = async () => {
     if (!inviteDraft) return;
     const ok = await revokeInvite(inviteDraft);
-    if (ok) setInviteDraft('');
+    if (ok) {
+      setInviteDraft('');
+      setInviteSpaceId('');
+    }
   };
   const joinShare = async () => {
     const ok = await joinInvite(joinCode);
@@ -1112,14 +1140,14 @@ function SettingsView({ user, groupId, shareEnabled, activeSpaceName, spaces, sp
     if (!confirm('個人スペースの表示に戻しますか？共有スペースから退出する場合は「スペース管理」の退出を使ってください。')) return;
     await setGroupId(newGroupId(user.uid));
     setInviteDraft('');
+    setInviteSpaceId('');
     setShareMode('idle');
   };
-  const showInvite = isSharing;
-  const showJoin = !isSharing && shareMode === 'join';
-  const spaceOptions = spaces.length ? spaces : [{ id: newGroupId(user.uid), name: personalSpaceName, type: 'personal' as SpaceType }];
+  const showJoin = shareMode === 'join';
   const submitCreateSpace = async () => {
-    const ok = await createSpace(spaceNameDraft, spaceTypeDraft);
-    if (ok) {
+    const createdSpaceId = await createSpace(spaceNameDraft, spaceTypeDraft);
+    if (createdSpaceId) {
+      setManagedSpaceId(String(createdSpaceId));
       setSpaceNameDraft('');
       setShareMode('idle');
     }
@@ -1135,24 +1163,26 @@ function SettingsView({ user, groupId, shareEnabled, activeSpaceName, spaces, sp
   };
   return <Section title="設定">
     <div className="share-status-card">
-      <div><p className="eyebrow">共有状態</p><h3>{isSharing ? `共有中: ${activeSpaceName || '共有スペース'}` : '未共有'}</h3><p className="muted">共有データ {sharedStats.sharedCount}件 / 相手の共有データ {sharedStats.partnerCount}件 / メモ {sharedStats.notesCount}件</p></div>
+      <div><p className="eyebrow">トーク管理</p><h3>{isSharing ? activeSpaceName || '共有スペース' : '個人スペース'}</h3><p className="muted">共有データ {sharedStats.sharedCount}件 / 相手の共有データ {sharedStats.partnerCount}件 / メモ {sharedStats.notesCount}件</p></div>
       <button className="btn secondary" onClick={reload}>再読み込み</button>
     </div>
-    <div className="card share-card"><h3><Settings size={18}/> スペース管理</h3><p className="muted">スペース名の変更、退出、招待コードの無効化ができます。表示対象の切替はホーム画面で行います。</p><div className="space-manage-list">{spaceOptions.map((space: SpaceSummary) => {
-      const isPersonal = space.type === 'personal';
-      return <div className="space-manage" key={space.id}><div className="row"><b>{space.name}</b><span>{isPersonal ? '自分' : space.type === 'pair' ? '1対1' : 'グループ'}</span></div><input className="input" value={spaceNameDrafts[space.id] ?? space.name} disabled={isPersonal || saving} onChange={e => updateSpaceNameDraft(space.id, e.target.value)} placeholder="スペース名" /><div className="grid"><button className="btn secondary" disabled={isPersonal || saving || (spaceNameDrafts[space.id] ?? space.name).trim() === space.name} onClick={() => renameSpace(space.id, spaceNameDrafts[space.id] ?? space.name)}>名前を変更</button><button className="btn danger" disabled={isPersonal || saving} onClick={() => { if (confirm(`${space.name} から退出しますか？`)) leaveSpace(space.id); }}>退出</button></div></div>;
-    })}</div></div>
-    {!isSharing && shareMode === 'idle' && <div className="card share-card share-start-card"><h3><Users size={18}/> 共有をはじめる</h3><p className="muted">初期状態は共有なしです。家族・友人などのスペースを作るか、相手から受け取ったコードで参加します。</p><div className="share-choice-grid"><button className="btn" onClick={() => setShareMode('invite')}><Share2 size={16}/> 作成する</button><button className="btn secondary" onClick={() => setShareMode('join')}><Users size={16}/> 参加する</button></div></div>}
-    {shareMode === 'invite' && !isSharing && <div className="card share-card"><h3><Share2 size={18}/> 共有スペースを作成</h3><p className="muted">家族、友人、旅行など、共有したい単位でスペースを作成します。</p><input className="input" value={spaceNameDraft} onChange={e => setSpaceNameDraft(e.target.value)} placeholder="スペース名（例: 家族、友人、旅行）" /><select className="select" value={spaceTypeDraft} onChange={e => setSpaceTypeDraft(e.target.value as SpaceType)}><option value="group">グループ</option><option value="pair">1対1</option></select><div className="grid"><button className="btn" disabled={!spaceNameDraft.trim() || saving} onClick={submitCreateSpace}>{saving ? '作成中...' : '作成'}</button><button className="btn secondary" disabled={saving} onClick={() => setShareMode('idle')}>戻る</button></div></div>}
-    {showInvite && <div className="card share-card"><h3><Share2 size={18}/> 相手を招待する</h3><p className="muted">招待コードを作成して相手に送ると、この共有スペースに参加できます。不要になったコードは無効化してください。</p><label>招待コード</label><input className="input code-input" readOnly value={inviteDraft} placeholder="未作成" /><div className="grid"><button className="btn secondary" disabled={saving} onClick={issueInvite}>{saving ? '作成中...' : '招待コードを作成'}</button><button className="btn secondary" disabled={!inviteDraft} onClick={copyCode}><Copy size={16}/> コピー</button><button className="btn danger" disabled={!inviteDraft || saving} onClick={revokeCurrentInvite}>無効化</button></div></div>}
-    {showJoin && <div className="card share-card"><h3><Users size={18}/> 招待コードで参加する</h3><p className="muted">相手から受け取った招待コードを入力します。招待に紐づいた共有スペースへ参加します。</p><input className="input code-input" value={joinCode} onChange={e => setJoinCode(e.target.value)} placeholder="例: PAIR-7K3Q-A9FM" /><div className="grid"><button className="btn" disabled={saving || !joinCode.trim()} onClick={joinShare}>{saving ? '参加中...' : '参加する'}</button><button className="btn secondary" disabled={saving} onClick={() => setShareMode('idle')}>戻る</button></div></div>}
-    <div className="card share-card"><h3><Users size={18}/> メンバー情報</h3><p className="muted">自分が各スペースでどう呼ばれるかを登録します。AIはここに入れた名前・関係性・呼び名で「友人Aの予定」のような質問を解釈します。</p><div className="member-profile-list">{spaceOptions.map((space: SpaceSummary) => {
+    <div className="card line-settings-card"><div className="line-card-head"><h3><MessageCircle size={18}/> トーク一覧</h3><button className="btn secondary" disabled={saving} onClick={() => setShareMode('invite')}><Share2 size={16}/> 新規作成</button></div><p className="muted">管理したい個人チャット・グループチャットを選びます。表示の切替はホーム画面でできます。</p><div className="line-thread-list">{spaceOptions.map((space: SpaceSummary) => {
       const members = (spaceMembers || []).filter((member: MemberProfile) => member.spaceId === space.id);
-      const mine = members.find((member: MemberProfile) => member.userId === user.uid);
-      const draft = memberDrafts[space.id] || { displayName: mine?.displayName || '', relationships: listToCsv(mine?.relationshipLabels), aliases: listToCsv(mine?.aliases) };
-      return <div className="member-profile" key={space.id}><div className="row"><b>{space.name}</b><span>{members.length}人</span></div><input className="input" value={draft.displayName} onChange={e => updateMemberDraft(space.id, 'displayName', e.target.value)} placeholder="このスペースでの表示名" /><input className="input" value={draft.relationships} onChange={e => updateMemberDraft(space.id, 'relationships', e.target.value)} placeholder="関係性（カンマ区切り: 友人, 家族）" /><input className="input" value={draft.aliases} onChange={e => updateMemberDraft(space.id, 'aliases', e.target.value)} placeholder="呼び名（カンマ区切り: さき, 友人A）" /><button className="btn secondary" disabled={saving} onClick={() => saveMemberProfile(space.id, draft.displayName, draft.relationships, draft.aliases)}>保存</button>{members.length > 0 && <p className="muted">参加中: {members.map((member: MemberProfile) => member.displayName || member.userId).join(' / ')}</p>}</div>;
-    })}</div></div>
-    <div className="card share-card"><h3>相手情報</h3><p className="muted">AIへの質問で使う名前と関係性です。例: 「さきの予定」「家族の支出」</p><input className="input" value={partnerNameDraft} onChange={e => setPartnerNameDraft(e.target.value)} placeholder="相手の名前（例: さき）" /><input className="input" value={partnerRelationshipDraft} onChange={e => setPartnerRelationshipDraft(e.target.value)} placeholder="関係性（例: 家族、友人、パートナー）" /><button className="btn secondary" onClick={() => savePartnerProfile(partnerNameDraft, partnerRelationshipDraft)}>相手情報を保存</button></div>
+      const active = managedSpaceKey === space.id;
+      return <button key={space.id} className={`line-thread ${active ? 'active' : ''}`} onClick={() => setManagedSpaceId(space.id)} disabled={saving}><span className="space-avatar">{space.name.slice(0, 1) || '自'}</span><span><b>{space.name}</b><small>{space.type === 'personal' ? '個人' : space.type === 'pair' ? '個人チャット' : 'グループチャット'} / {Math.max(members.length, space.type === 'personal' ? 1 : members.length)}人</small></span></button>;
+    })}</div><button className="btn ghost full" disabled={saving} onClick={() => setShareMode('join')}><Users size={16}/> 招待コードで参加</button></div>
+
+    {shareMode === 'invite' && <div className="card share-card"><h3><Share2 size={18}/> 新しいトークを作成</h3><p className="muted">LINEのグループを作る感覚で、家族・友人・旅行など共有したい単位を作成します。</p><input className="input" value={spaceNameDraft} onChange={e => setSpaceNameDraft(e.target.value)} placeholder="トーク名（例: 家族、友人、旅行）" /><select className="select" value={spaceTypeDraft} onChange={e => setSpaceTypeDraft(e.target.value as SpaceType)}><option value="group">グループチャット</option><option value="pair">個人チャット</option></select><div className="grid"><button className="btn" disabled={!spaceNameDraft.trim() || saving} onClick={submitCreateSpace}>{saving ? '作成中...' : '作成'}</button><button className="btn secondary" disabled={saving} onClick={() => setShareMode('idle')}>閉じる</button></div></div>}
+    {showJoin && <div className="card share-card"><h3><Users size={18}/> 招待コードで参加</h3><p className="muted">相手から受け取った招待コードを入力すると、そのコードに紐づいたトークへ参加します。</p><input className="input code-input" value={joinCode} onChange={e => setJoinCode(e.target.value)} placeholder="例: PAIR-7K3Q-A9FM" /><div className="grid"><button className="btn" disabled={saving || !joinCode.trim()} onClick={joinShare}>{saving ? '参加中...' : '参加する'}</button><button className="btn secondary" disabled={saving} onClick={() => setShareMode('idle')}>閉じる</button></div></div>}
+
+    <div className="card line-profile-card"><div className="line-profile-head"><span className="space-avatar large">{managedSpaceName.slice(0, 1) || '自'}</span><div><p className="eyebrow">{isManagedPersonal ? '個人' : managedSpace.type === 'pair' ? '個人チャット' : 'グループチャット'}</p><h3>{managedSpaceName}</h3><p className="muted">{managedMembers.length || (isManagedPersonal ? 1 : 0)}人が参加中</p></div></div>
+      <label>トーク名</label><div className="compose"><input className="input" value={spaceNameDrafts[managedSpaceKey] ?? managedSpaceName} disabled={isManagedPersonal || saving} onChange={e => updateSpaceNameDraft(managedSpaceKey, e.target.value)} placeholder="トーク名" /><button className="btn secondary" disabled={isManagedPersonal || saving || (spaceNameDrafts[managedSpaceKey] ?? managedSpaceName).trim() === managedSpaceName} onClick={() => renameSpace(managedSpaceKey, spaceNameDrafts[managedSpaceKey] ?? managedSpaceName)}>保存</button></div>
+      {!isManagedPersonal && <div className="invite-target"><span>招待先</span><b>{managedSpaceName}</b></div>}
+      {!isManagedPersonal && <div className="invite-box"><label>招待コード</label><input className="input code-input" readOnly value={inviteDraft} placeholder={`${managedSpaceName} の招待コードを未作成`} /><div className="grid"><button className="btn secondary" disabled={saving} onClick={issueInvite}>{saving ? '作成中...' : 'このトークに招待'}</button><button className="btn secondary" disabled={!inviteDraft} onClick={copyCode}><Copy size={16}/> コピー</button><button className="btn danger" disabled={!inviteDraft || saving} onClick={revokeCurrentInvite}>無効化</button></div></div>}
+      <div className="member-list"><h4>メンバー</h4>{managedMembers.length ? managedMembers.map((member: MemberProfile) => <div className="member-row" key={member.userId}><span className="space-avatar">{(member.displayName || member.userId || '?').slice(0, 1)}</span><span><b>{member.displayName || member.userId}</b><small>{[...(member.relationshipLabels || []), ...(member.aliases || [])].slice(0, 4).join(' / ') || '呼び方未設定'}</small></span></div>) : <p className="muted">まだメンバー情報がありません。</p>}</div>
+      <div className="alias-editor"><h4>自分の呼び方</h4><p className="muted">AIが「友人Aの予定」「家族の予定」のような質問を理解するための名前です。</p><input className="input" value={memberDraft.displayName} onChange={e => updateMemberDraft(managedSpaceKey, 'displayName', e.target.value)} placeholder="表示名（例: たろう）" /><input className="input" value={memberDraft.relationships} onChange={e => updateMemberDraft(managedSpaceKey, 'relationships', e.target.value)} placeholder="関係性（例: 友人, 家族）" /><input className="input" value={memberDraft.aliases} onChange={e => updateMemberDraft(managedSpaceKey, 'aliases', e.target.value)} placeholder="呼び名（例: 友人A, パパ）" /><button className="btn secondary full" disabled={saving} onClick={() => saveMemberProfile(managedSpaceKey, memberDraft.displayName, memberDraft.relationships, memberDraft.aliases)}>呼び方を保存</button></div>
+      {!isManagedPersonal && <button className="btn danger full" disabled={saving} onClick={() => { if (confirm(`${managedSpaceName} から退出しますか？`)) leaveSpace(managedSpaceKey); }}>このトークから退出</button>}
+    </div>
     <div className="card"><h3><Bell size={18}/> 通知</h3><label><input type="checkbox" checked={notificationEnabled} onChange={e => setNotificationEnabled(e.target.checked)} /> アプリ起動中の通知チェックを有効化</label><button className="btn" onClick={enablePush}>PWA Push通知を有効化</button><p className="muted">状態: {pushStatus}</p><p className="muted">iPhoneはSafariで開く → 共有 → ホーム画面に追加 → 追加したアイコンから開いて通知許可、の順に設定してください。</p></div>
     <div className="card"><h3>AI検索</h3><p className="muted">表示対象のAI検索だけを修復します。単一スペース表示中はそのスペースのみ、「すべて」表示中は参加中スペース全体が対象です。</p><button className="btn secondary" disabled={saving} onClick={repairSearchIndex}>{saving ? '修復中...' : '表示対象のAI検索を修復'}</button></div>
     <div className="danger-zone"><button className="btn secondary full" disabled={!isSharing} onClick={leaveShare}>個人スペースに切替</button></div>
