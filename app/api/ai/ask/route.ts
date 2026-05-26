@@ -286,7 +286,7 @@ function detailIntent(q: string, intent: QuestionIntent, s: ReturnType<typeof sc
   if (!(canUseLooseMatch ? looseDetailQuestion(q) : detailQuestion(q) || canUseKnownLooseMatch)) return null;
   if (supported.includes(intent) && rankedDetails(q, intent, detailCollection(intent, s)).length) return intent;
   const best = supported
-    .map(kind => ({ kind, max: Math.max(0, ...detailCollection(kind, s).map(item => detailScore(q, kind, item))) }))
+    .map(kind => ({ kind, max: Math.max(0, ...detailCollection(kind, s).map((item:any) => detailScore(q, kind, item))) }))
     .filter(result => result.max > 0)
     .sort((a, b) => b.max - a.max)[0];
   return best?.kind || null;
