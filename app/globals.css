@@ -84,6 +84,12 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   font-weight: 800;
   font-size: 13px;
 }
+.scope-status {
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
 
 .hero {
   background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);

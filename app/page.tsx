@@ -405,6 +405,7 @@ export default function Page() {
     <main className="content">
       {loadError && <div className="error-card"><div><b>データを読み込めませんでした</b><p>{loadError}</p></div><button className="btn secondary" disabled={dataLoading} onClick={() => loadAll(user.uid, visibleSpaceIds.length ? visibleSpaceIds : groupId)}>{dataLoading ? '再読み込み中...' : '再読み込み'}</button></div>}
       {operationError && <div className="error-card"><div><b>操作に失敗しました</b><p>{operationError}</p></div><button className="btn secondary" onClick={() => setOperationError('')}>閉じる</button></div>}
+      <div className="scope-status">表示対象: {viewAllSpaces ? `すべて（${activeSpaceIds.length || 1}件）` : activeSpaceName || personalSpaceName}</div>
       {operationMessage && <div className="sync-status">{operationMessage}</div>}
       {dataLoading && !loadError && <div className="sync-status">データを更新しています...</div>}
       {tab === 'home' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} chooseDate={chooseDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} onEdit={openEdit} onDelete={remove} currentUserId={user.uid} naturalAdd={naturalAdd} setTab={setTab} saving={saving} />}
@@ -724,11 +725,12 @@ export default function Page() {
     if (!user) return;
     try {
       setPushStatus('登録中...');
-      const token = await enablePwaPush(user.uid, groupId);
+      const targetSpaceIds = activeSpaceIds.length ? activeSpaceIds : [groupId];
+      const token = await enablePwaPush(user.uid, targetSpaceIds);
       setNotificationEnabled(true);
       localStorage.setItem(`notify_${user.uid}`, 'on');
-      setPushStatus(`Push登録済み: ${token.slice(0, 12)}...`);
-      alert('Push通知を有効化しました。iPhoneではホーム画面に追加したアプリから使うと安定します。');
+      setPushStatus(`Push登録済み: ${token.slice(0, 12)}... / ${targetSpaceIds.length}スペース`);
+      alert('Push通知を有効化しました。参加中スペースのリマインドを受け取れます。iPhoneではホーム画面に追加したアプリから使うと安定します。');
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Push通知の登録に失敗しました';
       setPushStatus(msg);
@@ -1041,7 +1043,7 @@ function SettingsView({ user, groupId, shareEnabled, viewAllSpaces, activeSpaceN
     })}</div></div>
     <div className="card share-card"><h3>相手情報</h3><p className="muted">AIへの質問で使う名前と関係性です。例: 「さきの予定」「家族の支出」</p><input className="input" value={partnerNameDraft} onChange={e => setPartnerNameDraft(e.target.value)} placeholder="相手の名前（例: さき）" /><input className="input" value={partnerRelationshipDraft} onChange={e => setPartnerRelationshipDraft(e.target.value)} placeholder="関係性（例: 家族、友人、パートナー）" /><button className="btn secondary" onClick={() => savePartnerProfile(partnerNameDraft, partnerRelationshipDraft)}>相手情報を保存</button></div>
     <div className="card"><h3><Bell size={18}/> 通知</h3><label><input type="checkbox" checked={notificationEnabled} onChange={e => setNotificationEnabled(e.target.checked)} /> アプリ起動中の通知チェックを有効化</label><button className="btn" onClick={enablePush}>PWA Push通知を有効化</button><p className="muted">状態: {pushStatus}</p><p className="muted">iPhoneはSafariで開く → 共有 → ホーム画面に追加 → 追加したアイコンから開いて通知許可、の順に設定してください。</p></div>
-    <div className="card"><h3>AI検索</h3><p className="muted">AIの検索結果が古い、または登録した内容が見つからない時だけ修復してください。</p><button className="btn secondary" disabled={saving} onClick={repairSearchIndex}>{saving ? '修復中...' : 'AI検索を修復'}</button></div>
+    <div className="card"><h3>AI検索</h3><p className="muted">表示対象のAI検索だけを修復します。単一スペース表示中はそのスペースのみ、「すべて」表示中は参加中スペース全体が対象です。</p><button className="btn secondary" disabled={saving} onClick={repairSearchIndex}>{saving ? '修復中...' : '表示対象のAI検索を修復'}</button></div>
     <div className="danger-zone"><button className="btn danger full" disabled={!isSharing} onClick={leaveShare}>共有を解除</button></div>
     <div className="account-zone"><button className="btn danger full" onClick={() => signOut(auth)}>ログアウト</button><p className="muted">ログイン: {user.email}</p></div>
   </Section>; }
