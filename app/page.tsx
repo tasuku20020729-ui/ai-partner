@@ -412,7 +412,7 @@ export default function Page() {
       {tab === 'calendar' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} chooseDate={chooseDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} onEdit={openEdit} onDelete={remove} currentUserId={user.uid} naturalAdd={naturalAdd} setTab={setTab} saving={saving} spaces={spaces} groupId={groupId} viewAllSpaces={viewAllSpaces} activeSpaceIds={activeSpaceIds} switchSpace={switchSpace} switchAllSpaces={switchAllSpaces} />}
       {tab === 'todo' && <TodoView todos={todos} currentUserId={user.uid} toggleTodo={toggleTodo} onEdit={openEdit} onDelete={remove} />}
       {tab === 'expense' && <ExpenseView expenses={expenses} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} setAddMode={setAddMode} />}
-      {tab === 'ai' && <AIView chat={chat} question={question} setQuestion={setQuestion} ask={askAI} saving={saving} />}
+      {tab === 'ai' && <AIView chat={chat} question={question} setQuestion={setQuestion} ask={askAI} saving={saving} activeScopeName={viewAllSpaces ? `すべてのスペース（${activeSpaceIds.length || 1}件）` : activeSpaceName || personalSpaceName} />}
       {tab === 'notes' && <NotesView notes={sharedNotes} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} setAddMode={setAddMode} />}
       {tab === 'settings' && <SettingsView user={user} groupId={groupId} shareEnabled={shareEnabled} activeSpaceName={activeSpaceName} spaces={spaces} spaceMembers={spaceMembers} setGroupId={saveGroupId} createSpace={createSpace} renameSpace={renameSpace} leaveSpace={leaveSpace} createInvite={createInviteForActiveSpace} revokeInvite={revokeInvite} joinInvite={joinInvite} partnerName={partnerName} partnerRelationship={partnerRelationship} savePartnerProfile={savePartnerProfile} saveMemberProfile={saveMemberProfile} reload={() => loadAll(user.uid, visibleSpaceIds.length ? visibleSpaceIds : groupId)} notificationEnabled={notificationEnabled} setNotificationEnabled={enableNotifications} pushStatus={pushStatus} enablePush={enablePushNotifications} repairSearchIndex={repairSearchIndex} saving={saving} sharedStats={sharedStats} />}
     </main>
@@ -874,18 +874,26 @@ export default function Page() {
         setOperationError(e instanceof Error ? `保存しましたが、${e.message}` : '保存しましたが、AI検索への同期に失敗しました');
       }
       setNaturalDraft(null); setEditTarget(null); setAddMode(null);
+      const savedDate = data.date || datePart(data.startAt) || data.dueAt;
+      if (savedDate) {
+        setSelectedDate(String(savedDate).slice(0, 10));
+        setCalendarMonth(String(savedDate).slice(0, 10));
+      }
+      setOperationMessage(editTarget ? '更新しました' : '保存しました');
+      window.setTimeout(() => setOperationMessage(''), 1800);
       return true;
     } catch (e) {
       setOperationError(e instanceof Error ? e.message : '保存に失敗しました');
+      setOperationMessage('');
       return false;
-    } finally { setOperationMessage(''); setSaving(false); }
+    } finally { setSaving(false); }
   }
-  async function askAI() {
+  async function askAI(overrideQuestion?: string) {
     if (!user) return;
-    if (!question.trim()) return;
+    const q = (overrideQuestion || question).trim();
+    if (!q) return;
     if (saving) return;
 
-    const q = question.trim();
     setQuestion('');
     setChat(c => [...c, { role: 'user', content: q }]);
     setSaving(true);
@@ -996,7 +1004,19 @@ function CalendarHomeView({ selectedDate, setSelectedDate, chooseDate, calendarM
     anniversary: anniversaries.some((a: Anniversary) => a.date?.slice(5) === date.slice(5))
   });
 
-  return <><SpaceChatSwitcher spaces={spaces} groupId={groupId} viewAllSpaces={viewAllSpaces} activeSpaceIds={activeSpaceIds} switchSpace={switchSpace} switchAllSpaces={switchAllSpaces} saving={saving} />
+  const submitNatural = () => {
+    if (!naturalText.trim() || saving) return;
+    naturalAdd(naturalText);
+    setNaturalText('');
+  };
+
+  return <><section className="home-summary">
+    <button className="summary-tile primary" onClick={() => { const today = todayIso(); setSelectedDate(today); setCalendarMonth(today); }}><span>今日</span><b>{todayIso().slice(5).replace('-', '/')}</b></button>
+    <button className="summary-tile" onClick={() => setTab('todo')}><span>未完了</span><b>{todos.filter((t: Todo) => t.status === 'open').length}</b></button>
+    <button className="summary-tile" onClick={() => setTab('expense')}><span>今月支出</span><b>{yen(monthExpense)}</b></button>
+  </section>
+    <SpaceChatSwitcher spaces={spaces} groupId={groupId} viewAllSpaces={viewAllSpaces} activeSpaceIds={activeSpaceIds} switchSpace={switchSpace} switchAllSpaces={switchAllSpaces} saving={saving} />
+    <section className="card natural-card"><h3>自然文で追加</h3><div className="compose"><input className="input" placeholder="例: 明日19時に歯医者 / 今週中に課題提出 / 昨日ランチで1200円" value={naturalText} disabled={saving} onChange={e => setNaturalText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') submitNatural(); }} /><button className="btn" disabled={!naturalText.trim() || saving} onClick={submitNatural}>{saving ? '処理中...' : '追加'}</button></div></section>
     <section className="calendar-hero"><div><p>カレンダー</p><h2>{monthLabel(calendarMonth)}</h2></div><button className="btn secondary" onClick={() => { const today = todayIso(); setSelectedDate(today); setCalendarMonth(today); }}>今日</button></section>
     <section className="calendar-card">
       <div className="calendar-head"><button className="icon-btn" onClick={() => setCalendarMonth(addMonths(calendarMonth, -1))} aria-label="前の月"><ChevronLeft size={18} /></button><b>{monthLabel(calendarMonth)}</b><button className="icon-btn" onClick={() => setCalendarMonth(addMonths(calendarMonth, 1))} aria-label="次の月"><ChevronRight size={18} /></button></div>
@@ -1005,7 +1025,7 @@ function CalendarHomeView({ selectedDate, setSelectedDate, chooseDate, calendarM
         if (!day) return <div key={`blank_${i}`} className="day-cell blank" />;
         const date = dateFromMonthDay(calendarMonth, day);
         const marks = hasOnDate(date);
-        return <button key={date} className={`day-cell ${date === selectedDate ? 'selected' : ''} ${date === todayIso() ? 'today' : ''}`} onClick={() => chooseDate(date)}><span>{day}</span><div className="marks">{marks.event && <i className="event" />}{marks.todo && <i className="todo" />}{marks.diary && <i className="diary" />}{marks.expense && <i className="expense" />}{marks.anniversary && <i className="anniv" />}</div></button>;
+        return <button key={date} className={`day-cell ${date === selectedDate ? 'selected' : ''} ${date === todayIso() ? 'today' : ''}`} onClick={() => chooseDate(date)} onContextMenu={e => { e.preventDefault(); openAdd('event', date); }}><span>{day}</span><div className="marks">{marks.event && <i className="event" />}{marks.todo && <i className="todo" />}{marks.diary && <i className="diary" />}{marks.expense && <i className="expense" />}{marks.anniversary && <i className="anniv" />}</div></button>;
       })}</div>
     </section>
     <section className="selected-day-panel">
@@ -1023,11 +1043,9 @@ function CalendarHomeView({ selectedDate, setSelectedDate, chooseDate, calendarM
         {selectedTodos.length > 0 && <div className="day-group"><h4><CheckSquare size={15} />ToDo</h4>{selectedTodos.map((t: Todo) => <article className={`day-item ${t.status === 'done' ? 'is-done' : ''}`} key={t.id}><div><b>{t.title}</b><ShareBadge item={t} currentUserId={currentUserId} /><span>{t.status === 'done' ? '完了' : '未完了'} / 優先度{priorityLabel[t.priority]}</span></div>{t.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('todo', t)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('todo', t.id)}>削除</button></span>}</article>)}</div>}
         {selectedExpenses.length > 0 && <div className="day-group"><h4><ReceiptText size={15} />支出 <span>{yen(selectedTotal)}</span></h4>{selectedExpenses.map((e: Expense) => <article className="day-item" key={e.id}><div><b>{e.title}</b><ShareBadge item={e} currentUserId={currentUserId} /><span>{categoryLabel[e.category]} / {yen(Number(e.amountBase || 0))}</span></div>{e.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('expense', e)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('expense', e.id)}>削除</button></span>}</article>)}</div>}
         {selectedDiaries.length > 0 && <div className="day-group"><h4><NotebookPen size={15} />日記</h4>{selectedDiaries.map((d: Diary) => <article className="day-item" key={d.id}><div><b>{d.title}</b><ShareBadge item={d} currentUserId={currentUserId} /><span>{d.mood || d.ownerName}</span></div>{d.userId === currentUserId && <span className="mini-actions"><button className="mini-link" disabled={saving} onClick={() => onEdit('diary', d)}>編集</button><button className="mini-link danger-text" disabled={saving} onClick={() => onDelete('diary', d.id)}>削除</button></span>}</article>)}</div>}
-        {!hasSelectedItems && <p className="muted">この日の予定・ToDo・日記はまだありません。</p>}
+        {!hasSelectedItems && <div className="empty-state"><b>この日はまだ空いています</b><p>日記、予定、ToDo、支出をこの日付に追加できます。</p><div className="empty-actions"><button className="btn secondary" onClick={() => openAdd('event', selectedDate)}>予定</button><button className="btn secondary" onClick={() => openAdd('todo', selectedDate)}>ToDo</button></div></div>}
       </div>
     </section>
-    <section className="card natural-card"><h3>自然文で追加</h3><div className="compose"><input className="input" placeholder="例: 明日19時に歯医者 / 今週中に課題提出 / 昨日ランチで1200円" value={naturalText} disabled={saving} onChange={e => setNaturalText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && naturalText.trim() && !saving) { naturalAdd(naturalText); setNaturalText(''); } }} /><button className="btn" disabled={!naturalText.trim() || saving} onClick={() => { naturalAdd(naturalText); setNaturalText(''); }}>{saving ? '処理中...' : '追加'}</button></div></section>
-    <div className="grid"><button className="card metric-card" onClick={() => setTab('todo')}><span>未完了ToDo</span><b>{todos.filter((t: Todo) => t.status === 'open').length}</b></button><button className="card metric-card" onClick={() => setTab('expense')}><span>今月の支出</span><b>{yen(monthExpense)}</b></button></div>
   </>;
 }
 
@@ -1052,7 +1070,7 @@ function SpaceChatSwitcher({ spaces, groupId, viewAllSpaces, activeSpaceIds, swi
 }
 
 function DateActionSheet({ selectedDate, close, openAdd }: { selectedDate: string; close: () => void; openAdd: (mode: AddMode, date?: string) => void }) {
-  return <div className="date-sheet-backdrop" onClick={close}><div className="date-sheet" onClick={e => e.stopPropagation()}><div className="row"><div><p className="eyebrow">追加先を選択</p><h3>{new Date(`${selectedDate}T00:00:00+09:00`).toLocaleDateString('ja-JP', { dateStyle: 'full' })}</h3></div><button className="icon-btn" onClick={close}>×</button></div><div className="date-sheet-actions"><button onClick={() => openAdd('diary', selectedDate)}><NotebookPen size={18} />日記を書く</button><button onClick={() => openAdd('todo', selectedDate)}><CheckSquare size={18} />ToDoを追加</button><button onClick={() => openAdd('event', selectedDate)}><CalendarDays size={18} />予定を追加</button><button onClick={() => openAdd('expense', selectedDate)}><ReceiptText size={18} />支出を追加</button></div></div></div>;
+  return <div className="date-sheet-backdrop" onClick={close}><div className="date-sheet" onClick={e => e.stopPropagation()}><div className="row"><div><p className="eyebrow">追加先を選択</p><h3>{new Date(`${selectedDate}T00:00:00+09:00`).toLocaleDateString('ja-JP', { dateStyle: 'full' })}</h3></div><button className="icon-btn" onClick={close}>×</button></div><div className="date-sheet-actions list"><button onClick={() => openAdd('diary', selectedDate)}><span><NotebookPen size={19} /></span><b>日記を書く</b><small>その日の出来事や気分を残す</small></button><button onClick={() => openAdd('todo', selectedDate)}><span><CheckSquare size={19} /></span><b>ToDoを追加</b><small>期限付きのやることを登録</small></button><button onClick={() => openAdd('event', selectedDate)}><span><CalendarDays size={19} /></span><b>予定を追加</b><small>開始時刻やリマインドを設定</small></button><button onClick={() => openAdd('expense', selectedDate)}><span><ReceiptText size={19} /></span><b>支出を追加</b><small>金額やカテゴリを記録</small></button></div></div></div>;
 }
 
 function HomeView({ setAddMode, todayEvents, openTodos, monthExpense, setTab, memoryCards, reminderCards }: any) {
@@ -1063,7 +1081,10 @@ function CalendarView({ events, anniversaries, currentUserId, onDelete, setAddMo
 function TodoView({ todos, currentUserId, toggleTodo, onEdit, onDelete }: any) { return <Section title="ToDo">{todos.map((t: Todo) => <article className="card" key={t.id}><label className="row"><span><input type="checkbox" checked={t.status === 'done'} disabled={t.userId !== currentUserId} onChange={() => toggleTodo(t)} /> <b className={t.status === 'done' ? 'done' : ''}>{t.title}</b></span><span>{t.priority}</span></label><p className="muted">期限: {t.dueAt || '-'} / {t.ownerName}</p>{t.remindAt && <p className="muted">リマインド: {new Date(t.remindAt).toLocaleString('ja-JP')}</p>}<p>{t.description}</p>{t.userId === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('todo', t)}>編集</button><button className="link" onClick={() => onDelete('todo', t.id)}>削除</button></div>}</article>)}</Section>; }
 function ExpenseView({ expenses, currentUserId, onEdit, onDelete, setAddMode }: any) { const total = expenses.reduce((s: number, e: Expense) => s + Number(e.amountBase || 0), 0); return <Section title="支出"><button className="btn" onClick={() => setAddMode('expense')}>支出を追加</button><div className="card"><h3>合計</h3><div className="big">{yen(total)}</div></div>{expenses.map((e: Expense) => <article className="card" key={e.id}><div className="row"><b>{e.title}</b><span>{e.amount.toLocaleString()} {e.currency}</span></div><p className="muted">{e.date} / {categoryLabel[e.category]} / {e.ownerName}</p><p>{e.memo}</p>{e.receiptImageUrl && <img className="photo" src={e.receiptImageUrl} alt="receipt" />}{e.userId === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('expense', e)}>編集</button><button className="link" onClick={() => onDelete('expense', e.id)}>削除</button></div>}</article>)}</Section>; }
 function NotesView({ notes, currentUserId, onEdit, onDelete, setAddMode }: any) { return <Section title="共有メモ"><button className="btn" onClick={() => setAddMode('note')}>共有メモ追加</button>{notes.map((n: SharedNote) => <article className="card" key={n.id}><b>{n.title}</b><p className="muted">{n.createdByName}</p><p>{n.content}</p>{n.createdBy === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('note', n)}>編集</button><button className="link" onClick={() => onDelete('note', n.id)}>削除</button></div>}</article>)}</Section>; }
-function AIView({ chat, question, setQuestion, ask, saving }: any) { return <Section title="AIチャット"><div className="chat">{chat.map((m: ChatMessage, i: number) => <div key={i} className={`bubble ${m.role}`}>{m.content}</div>)}</div><div className="compose"><input className="input" placeholder="例: 明後日の予定は？" value={question} disabled={saving} onChange={e => setQuestion(e.target.value)} onKeyDown={e => e.key === 'Enter' && !saving && ask()} /><button className="btn" disabled={saving || !question.trim()} onClick={ask}>{saving ? '回答中...' : '質問'}</button></div></Section>; }
+function AIView({ chat, question, setQuestion, ask, saving, activeScopeName }: any) {
+  const suggestions = ['明日の予定は？', '未完了のToDoは？', '今月の支出を教えて', '次の記念日は？'];
+  return <section className="ai-screen"><div className="ai-header"><div className="space-avatar large"><MessageCircle size={24} /></div><div><p className="eyebrow">AIチャットbot</p><h2>生活データに質問</h2><p className="muted">予定、ToDo、日記、支出をまとめて確認できます。</p></div></div><div className="ai-scope"><span>参照中</span><b>{activeScopeName}</b></div><div className="suggestion-chips">{suggestions.map(text => <button key={text} disabled={saving} onClick={() => ask(text)}>{text}</button>)}</div><div className="chat ai-chat">{chat.map((m: ChatMessage, i: number) => <div key={i} className={`bubble ${m.role}`}>{m.content}</div>)}</div><div className="ai-compose"><input className="input" placeholder="例: 明後日の予定は？" value={question} disabled={saving} onChange={e => setQuestion(e.target.value)} onKeyDown={e => e.key === 'Enter' && !saving && ask()} /><button className="btn" disabled={saving || !question.trim()} onClick={() => ask()}>{saving ? '...' : '送信'}</button></div></section>;
+}
 
 function ShareBadge({ item, currentUserId }: { item: { userId?: string; visibility?: Visibility; ownerName?: string }; currentUserId: string }) {
   if (item.userId && item.userId !== currentUserId) return <span className="share-badge partner">{item.ownerName || '相手'}</span>;
@@ -1108,6 +1129,9 @@ function SettingsView({ user, groupId, shareEnabled, activeSpaceName, spaces, sp
   const managedMine = managedMembers.find((member: MemberProfile) => member.userId === user.uid);
   const memberDraft = memberDrafts[managedSpaceKey] || { displayName: managedMine?.displayName || '', relationships: listToCsv(managedMine?.relationshipLabels), aliases: listToCsv(managedMine?.aliases) };
   const isManagedPersonal = managedSpace.type === 'personal';
+  const permission = typeof Notification === 'undefined' ? 'unsupported' : Notification.permission;
+  const standalone = typeof window !== 'undefined' && (window.matchMedia?.('(display-mode: standalone)').matches || (navigator as any).standalone);
+  const notificationLabel = permission === 'granted' ? '許可済み' : permission === 'denied' ? '拒否中' : permission === 'unsupported' ? '未対応' : '未許可';
   const copyCode = async () => {
     if (!inviteDraft) return alert('先に招待コードを作成してください');
     await navigator.clipboard?.writeText(inviteDraft);
@@ -1166,7 +1190,8 @@ function SettingsView({ user, groupId, shareEnabled, activeSpaceName, spaces, sp
       <div><p className="eyebrow">AI参照スペース管理</p><h3>{isSharing ? activeSpaceName || '共有スペース' : '個人スペース'}</h3><p className="muted">共有データ {sharedStats.sharedCount}件 / 相手の共有データ {sharedStats.partnerCount}件 / メモ {sharedStats.notesCount}件</p></div>
       <button className="btn secondary" onClick={reload}>再読み込み</button>
     </div>
-    <div className="card line-settings-card"><div className="line-card-head"><h3><Users size={18}/> スペース一覧</h3><button className="btn secondary" disabled={saving} onClick={() => setShareMode('invite')}><Share2 size={16}/> 新規作成</button></div><p className="muted">AIチャットbotが参照する個人・共有グループを選びます。表示の切替はホーム画面でできます。</p><div className="line-thread-list">{spaceOptions.map((space: SpaceSummary) => {
+    <div className="settings-group-title">参照スペース</div>
+    <div className="card line-settings-card"><div className="line-card-head"><h3><Users size={18}/> スペース一覧</h3><button className="btn secondary" disabled={saving} onClick={() => setShareMode('invite')}><Share2 size={16}/> 新規作成</button></div><p className="muted section-note">AIチャットbotが参照する個人・共有グループを選びます。表示の切替はホーム画面でできます。</p><div className="line-thread-list">{spaceOptions.map((space: SpaceSummary) => {
       const members = (spaceMembers || []).filter((member: MemberProfile) => member.spaceId === space.id);
       const active = managedSpaceKey === space.id;
       return <button key={space.id} className={`line-thread ${active ? 'active' : ''}`} onClick={() => setManagedSpaceId(space.id)} disabled={saving}><span className="space-avatar">{space.name.slice(0, 1) || '自'}</span><span><b>{space.name}</b><small>{space.type === 'personal' ? '個人' : space.type === 'pair' ? '共有相手' : '共有グループ'} / {Math.max(members.length, space.type === 'personal' ? 1 : members.length)}人</small></span></button>;
@@ -1175,6 +1200,7 @@ function SettingsView({ user, groupId, shareEnabled, activeSpaceName, spaces, sp
     {shareMode === 'invite' && <div className="card share-card"><h3><Share2 size={18}/> 新しい共有スペースを作成</h3><p className="muted">AIに一緒に参照させたい単位を作成します。例: 家族、友人、旅行、パートナー。</p><input className="input" value={spaceNameDraft} onChange={e => setSpaceNameDraft(e.target.value)} placeholder="スペース名（例: 家族、友人、旅行）" /><select className="select" value={spaceTypeDraft} onChange={e => setSpaceTypeDraft(e.target.value as SpaceType)}><option value="group">共有グループ</option><option value="pair">共有相手</option></select><div className="grid"><button className="btn" disabled={!spaceNameDraft.trim() || saving} onClick={submitCreateSpace}>{saving ? '作成中...' : '作成'}</button><button className="btn secondary" disabled={saving} onClick={() => setShareMode('idle')}>閉じる</button></div></div>}
     {showJoin && <div className="card share-card"><h3><Users size={18}/> 招待コードで参加</h3><p className="muted">相手から受け取った招待コードを入力すると、そのコードに紐づいた共有スペースへ参加します。</p><input className="input code-input" value={joinCode} onChange={e => setJoinCode(e.target.value)} placeholder="例: PAIR-7K3Q-A9FM" /><div className="grid"><button className="btn" disabled={saving || !joinCode.trim()} onClick={joinShare}>{saving ? '参加中...' : '参加する'}</button><button className="btn secondary" disabled={saving} onClick={() => setShareMode('idle')}>閉じる</button></div></div>}
 
+    <div className="settings-group-title">選択中スペース</div>
     <div className="card line-profile-card"><div className="line-profile-head"><span className="space-avatar large">{managedSpaceName.slice(0, 1) || '自'}</span><div><p className="eyebrow">{isManagedPersonal ? '個人' : managedSpace.type === 'pair' ? '共有相手' : '共有グループ'}</p><h3>{managedSpaceName}</h3><p className="muted">{managedMembers.length || (isManagedPersonal ? 1 : 0)}人が参加中</p></div></div>
       <label>スペース名</label><div className="compose"><input className="input" value={spaceNameDrafts[managedSpaceKey] ?? managedSpaceName} disabled={isManagedPersonal || saving} onChange={e => updateSpaceNameDraft(managedSpaceKey, e.target.value)} placeholder="スペース名" /><button className="btn secondary" disabled={isManagedPersonal || saving || (spaceNameDrafts[managedSpaceKey] ?? managedSpaceName).trim() === managedSpaceName} onClick={() => renameSpace(managedSpaceKey, spaceNameDrafts[managedSpaceKey] ?? managedSpaceName)}>保存</button></div>
       {!isManagedPersonal && <div className="invite-target"><span>招待先</span><b>{managedSpaceName}</b></div>}
@@ -1183,8 +1209,10 @@ function SettingsView({ user, groupId, shareEnabled, activeSpaceName, spaces, sp
       <div className="alias-editor"><h4>自分の呼び方</h4><p className="muted">AIが「友人Aの予定」「家族の予定」のような質問を理解するための名前です。</p><input className="input" value={memberDraft.displayName} onChange={e => updateMemberDraft(managedSpaceKey, 'displayName', e.target.value)} placeholder="表示名（例: たろう）" /><input className="input" value={memberDraft.relationships} onChange={e => updateMemberDraft(managedSpaceKey, 'relationships', e.target.value)} placeholder="関係性（例: 友人, 家族）" /><input className="input" value={memberDraft.aliases} onChange={e => updateMemberDraft(managedSpaceKey, 'aliases', e.target.value)} placeholder="呼び名（例: 友人A, パパ）" /><button className="btn secondary full" disabled={saving} onClick={() => saveMemberProfile(managedSpaceKey, memberDraft.displayName, memberDraft.relationships, memberDraft.aliases)}>呼び方を保存</button></div>
       {!isManagedPersonal && <button className="btn danger full" disabled={saving} onClick={() => { if (confirm(`${managedSpaceName} から退出しますか？`)) leaveSpace(managedSpaceKey); }}>このスペースから退出</button>}
     </div>
-    <div className="card"><h3><Bell size={18}/> 通知</h3><label><input type="checkbox" checked={notificationEnabled} onChange={e => setNotificationEnabled(e.target.checked)} /> アプリ起動中の通知チェックを有効化</label><button className="btn" onClick={enablePush}>PWA Push通知を有効化</button><p className="muted">状態: {pushStatus}</p><p className="muted">iPhoneはSafariで開く → 共有 → ホーム画面に追加 → 追加したアイコンから開いて通知許可、の順に設定してください。</p></div>
-    <div className="card"><h3>AI検索</h3><p className="muted">表示対象のAI検索だけを修復します。単一スペース表示中はそのスペースのみ、「すべて」表示中は参加中スペース全体が対象です。</p><button className="btn secondary" disabled={saving} onClick={repairSearchIndex}>{saving ? '修復中...' : '表示対象のAI検索を修復'}</button></div>
+    <div className="settings-group-title">通知</div>
+    <div className="card settings-list-card"><h3><Bell size={18}/> 通知</h3><div className="notification-status"><span>ブラウザ通知</span><b>{notificationLabel}</b><small>{standalone ? 'ホーム画面アプリとして起動中' : 'ブラウザで起動中'}</small></div><label className="settings-row"><span>アプリ起動中の通知チェック</span><input type="checkbox" checked={notificationEnabled} onChange={e => setNotificationEnabled(e.target.checked)} /></label><button className="btn" onClick={enablePush}>PWA Push通知を有効化</button><p className="muted">状態: {pushStatus}</p><p className="muted">iPhoneはSafariで開く → 共有 → ホーム画面に追加 → 追加したアイコンから開いて通知許可、の順に設定してください。</p></div>
+    <div className="settings-group-title">メンテナンス</div>
+    <div className="card settings-list-card"><h3>AI検索</h3><p className="muted">表示対象のAI検索だけを修復します。単一スペース表示中はそのスペースのみ、「すべて」表示中は参加中スペース全体が対象です。</p><button className="btn secondary" disabled={saving} onClick={repairSearchIndex}>{saving ? '修復中...' : '表示対象のAI検索を修復'}</button></div>
     <div className="danger-zone"><button className="btn secondary full" disabled={!isSharing} onClick={leaveShare}>個人スペースに切替</button></div>
     <div className="account-zone"><button className="btn danger full" onClick={() => signOut(auth)}>ログアウト</button><p className="muted">ログイン: {user.email}</p></div>
   </Section>; }
