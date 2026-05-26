@@ -18,9 +18,8 @@ export async function requireAuth(req: Request): Promise<AuthContext> {
   const data = userSnap.data() || {};
   const personalSpaceId = String(data.personalSpaceId || `group_${decoded.uid}`);
   const activeSpaceId = String(data.activeSpaceId || data.groupId || personalSpaceId);
-  const memberSnap = await adminDb().collectionGroup('members').where('userId', '==', decoded.uid).get();
-  const memberSpaceIds = memberSnap.docs.map(doc => String(doc.data().spaceId || doc.ref.parent.parent?.id || '')).filter(Boolean);
-  const spaceIds = Array.from(new Set([personalSpaceId, activeSpaceId, ...memberSpaceIds]));
+  const joinedSpaceIds = Array.isArray(data.joinedSpaceIds) ? data.joinedSpaceIds.map(String) : [];
+  const spaceIds = Array.from(new Set([personalSpaceId, activeSpaceId, data.groupId, ...joinedSpaceIds].filter(Boolean).map(String)));
   return { uid: decoded.uid, groupId: activeSpaceId, personalSpaceId, activeSpaceId, spaceIds };
 }
 

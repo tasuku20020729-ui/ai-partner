@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { auth, db, storage } from '@/lib/firebase';
 import { createUserWithEmailAndPassword, onAuthStateChanged, signInWithEmailAndPassword, signOut, updateProfile, type User } from 'firebase/auth';
-import { addDoc, collection, collectionGroup, deleteDoc, doc, getDoc, getDocs, increment, onSnapshot, query, setDoc, updateDoc, where } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, increment, onSnapshot, query, setDoc, updateDoc, where } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { Bell, CalendarDays, CheckSquare, ChevronLeft, ChevronRight, Gift, Home, MessageCircle, NotebookPen, ReceiptText, Settings, StickyNote, Users, Copy, Share2 } from 'lucide-react';
 import { todayIso, toDateTimeLocalValue } from '@/lib/date';
@@ -173,6 +173,7 @@ export default function Page() {
         const nextShareEnabled = savedShareEnabled || cachedShareEnabled;
         const personalId = savedPersonalSpaceId || uidPersonalSpaceId;
         const gid = nextShareEnabled ? (savedActiveSpaceId || savedGroupId || cachedGroupId || personalId) : personalId;
+        const joinedSpaceIds = Array.from(new Set([personalId, gid, ...(Array.isArray(userSnap.data()?.joinedSpaceIds) ? userSnap.data()?.joinedSpaceIds : [])].filter(Boolean)));
         const savedPartnerName = userSnap.data()?.partnerName;
         const savedPartnerRelationship = userSnap.data()?.partnerRelationship;
         const savedPartnerProfileConfigured = userSnap.data()?.partnerProfileConfigured;
@@ -193,8 +194,8 @@ export default function Page() {
         const now = new Date().toISOString();
         await setDoc(doc(db, 'spaces', personalId), { name: personalSpaceName, type: 'personal', ownerId: u.uid, createdAt: userSnap.data()?.createdAt || now, updatedAt: now }, { merge: true });
         await setDoc(doc(db, 'spaces', personalId, 'members', u.uid), { id: u.uid, spaceId: personalId, spaceName: personalSpaceName, userId: u.uid, displayName: u.displayName || u.email || '自分', role: 'owner', relationshipLabels: ['自分'], aliases: ['自分', '私', '自分だけ'], joinedAt: userSnap.data()?.createdAt || now, updatedAt: now }, { merge: true });
-        await setDoc(userRef, { name: u.displayName || u.email || 'User', email: u.email, defaultCurrency: 'JPY', personalSpaceId: personalId, activeSpaceId: gid, groupId: gid, shareEnabled: nextShareEnabled, partnerName: nextPartnerName, partnerRelationship: nextPartnerRelationship, partnerProfileConfigured: Boolean(nextPartnerName || nextPartnerRelationship), updatedAt: now }, { merge: true });
-        await loadJoinedSpaces(u.uid, personalId);
+        await setDoc(userRef, { name: u.displayName || u.email || 'User', email: u.email, defaultCurrency: 'JPY', personalSpaceId: personalId, activeSpaceId: gid, groupId: gid, joinedSpaceIds, shareEnabled: nextShareEnabled, partnerName: nextPartnerName, partnerRelationship: nextPartnerRelationship, partnerProfileConfigured: Boolean(nextPartnerName || nextPartnerRelationship), updatedAt: now }, { merge: true });
+        await loadJoinedSpaces(u.uid, personalId, joinedSpaceIds);
         await loadAll(u.uid, gid);
       }
     } catch (e) {
@@ -305,21 +306,22 @@ export default function Page() {
     }
   }
 
-  async function loadJoinedSpaces(uid = user?.uid, fallbackPersonalId = user ? newGroupId(user.uid) : '') {
+  async function loadJoinedSpaces(uid = user?.uid, fallbackPersonalId = user ? newGroupId(user.uid) : '', knownSpaceIds?: string[]) {
     if (!uid) return;
     const personalId = fallbackPersonalId || newGroupId(uid);
     try {
-      const memberSnap = await getDocs(query(collectionGroup(db, 'members'), where('userId', '==', uid)));
-      const memberSpaceIds = memberSnap.docs.map(v => String(v.data().spaceId || v.ref.parent.parent?.id || '')).filter(Boolean);
-      const ids = Array.from(new Set([personalId, ...memberSpaceIds]));
+      const userSnap = await getDoc(doc(db, 'users', uid));
+      const data = userSnap.data() || {};
+      const ids = Array.from(new Set([personalId, data.activeSpaceId, data.groupId, ...(knownSpaceIds || []), ...(Array.isArray(data.joinedSpaceIds) ? data.joinedSpaceIds : [])].map(String).filter(Boolean)));
       const loaded = await Promise.all(ids.map(async id => {
-        const member = memberSnap.docs.find(v => String(v.data().spaceId || v.ref.parent.parent?.id || '') === id)?.data();
+        const memberSnap = await getDoc(doc(db, 'spaces', id, 'members', uid)).catch(() => null);
+        const member = memberSnap?.data();
         const spaceSnap = await getDoc(doc(db, 'spaces', id)).catch(() => null);
-        const data = spaceSnap?.data();
+        const spaceData = spaceSnap?.data();
         return {
           id,
-          name: String(data?.name || member?.spaceName || (id === personalId ? personalSpaceName : '共有スペース')),
-          type: (data?.type || (id === personalId ? 'personal' : 'group')) as SpaceType
+          name: String(spaceData?.name || member?.spaceName || (id === personalId ? personalSpaceName : '共有スペース')),
+          type: (spaceData?.type || (id === personalId ? 'personal' : 'group')) as SpaceType
         };
       }));
       const sorted = loaded.sort((a, b) => Number(a.type !== 'personal') - Number(b.type !== 'personal') || a.name.localeCompare(b.name, 'ja'));
@@ -473,7 +475,7 @@ export default function Page() {
     setViewAllSpaces(false);
     setActiveSpaceName(nextShareEnabled ? activeSpaceName || '共有スペース' : personalSpaceName);
     try {
-      await setDoc(doc(db, 'users', user.uid), { groupId: nextGroupId, activeSpaceId: nextGroupId, shareEnabled: nextShareEnabled, updatedAt: new Date().toISOString() }, { merge: true });
+      await setDoc(doc(db, 'users', user.uid), { groupId: nextGroupId, activeSpaceId: nextGroupId, joinedSpaceIds: Array.from(new Set([...activeSpaceIds, nextGroupId, newGroupId(user.uid)].filter(Boolean))), shareEnabled: nextShareEnabled, updatedAt: new Date().toISOString() }, { merge: true });
       localStorage.setItem(`groupId_${user.uid}`, nextGroupId);
       localStorage.setItem(`shareEnabled_${user.uid}`, nextShareEnabled ? 'true' : 'false');
       await loadAll(user.uid, nextGroupId);
@@ -503,7 +505,7 @@ export default function Page() {
     setOperationError('');
     setOperationMessage('スペースを切り替えています...');
     try {
-      await setDoc(doc(db, 'users', user.uid), { groupId: space.id, activeSpaceId: space.id, shareEnabled: nextShareEnabled, updatedAt: new Date().toISOString() }, { merge: true });
+      await setDoc(doc(db, 'users', user.uid), { groupId: space.id, activeSpaceId: space.id, joinedSpaceIds: Array.from(new Set([...activeSpaceIds, space.id, newGroupId(user.uid)].filter(Boolean))), shareEnabled: nextShareEnabled, updatedAt: new Date().toISOString() }, { merge: true });
       localStorage.setItem(`groupId_${user.uid}`, space.id);
       localStorage.setItem(`shareEnabled_${user.uid}`, nextShareEnabled ? 'true' : 'false');
       await loadAll(user.uid, space.id);
@@ -554,7 +556,8 @@ export default function Page() {
     try {
       await setDoc(doc(db, 'spaces', spaceId), { name: spaceName, type, ownerId: user.uid, createdAt: now, updatedAt: now });
       await setDoc(doc(db, 'spaces', spaceId, 'members', user.uid), { id: user.uid, spaceId, spaceName, userId: user.uid, displayName: user.displayName || user.email || '自分', role: 'owner', relationshipLabels: ['自分'], aliases: ['自分', '私'], joinedAt: now, updatedAt: now });
-      await setDoc(doc(db, 'users', user.uid), { groupId: spaceId, activeSpaceId: spaceId, shareEnabled: true, updatedAt: now }, { merge: true });
+      const nextJoinedSpaceIds = Array.from(new Set([...activeSpaceIds, spaceId, newGroupId(user.uid)].filter(Boolean)));
+      await setDoc(doc(db, 'users', user.uid), { groupId: spaceId, activeSpaceId: spaceId, joinedSpaceIds: nextJoinedSpaceIds, shareEnabled: true, updatedAt: now }, { merge: true });
       setGroupId(spaceId);
       setShareEnabled(true);
       setViewAllSpaces(false);
@@ -563,7 +566,7 @@ export default function Page() {
       localStorage.setItem(`shareEnabled_${user.uid}`, 'true');
       setSpaces(prev => mergeDocs<SpaceSummary>(prev, [{ id: spaceId, name: spaceName, type }]).sort((a, b) => Number(a.type !== 'personal') - Number(b.type !== 'personal') || a.name.localeCompare(b.name, 'ja')));
       await loadAll(user.uid, spaceId);
-      await loadJoinedSpaces(user.uid);
+      await loadJoinedSpaces(user.uid, newGroupId(user.uid), nextJoinedSpaceIds);
       return true;
     } catch (e) {
       setGroupId(previousGroupId);
@@ -644,7 +647,8 @@ export default function Page() {
         joinedAt: now,
         updatedAt: now
       }, { merge: true });
-      await setDoc(doc(db, 'users', user.uid), { groupId: spaceId, activeSpaceId: spaceId, shareEnabled: true, updatedAt: now }, { merge: true });
+      const nextJoinedSpaceIds = Array.from(new Set([...activeSpaceIds, spaceId, newGroupId(user.uid)].filter(Boolean)));
+      await setDoc(doc(db, 'users', user.uid), { groupId: spaceId, activeSpaceId: spaceId, joinedSpaceIds: nextJoinedSpaceIds, shareEnabled: true, updatedAt: now }, { merge: true });
       await updateDoc(inviteRef, { usedCount: increment(1), updatedAt: now });
       setGroupId(spaceId);
       setShareEnabled(true);
@@ -654,7 +658,7 @@ export default function Page() {
       localStorage.setItem(`shareEnabled_${user.uid}`, 'true');
       setSpaces(prev => mergeDocs<SpaceSummary>(prev, [{ id: spaceId, name: spaceName, type: 'group' }]).sort((a, b) => Number(a.type !== 'personal') - Number(b.type !== 'personal') || a.name.localeCompare(b.name, 'ja')));
       await loadAll(user.uid, spaceId);
-      await loadJoinedSpaces(user.uid);
+      await loadJoinedSpaces(user.uid, newGroupId(user.uid), nextJoinedSpaceIds);
       return true;
     } catch (e) {
       setGroupId(previousGroupId);
