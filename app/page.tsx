@@ -1032,7 +1032,6 @@ function CalendarHomeView({ selectedDate, setSelectedDate, chooseDate, calendarM
       </div>
     </section>
     <section className="card natural-card"><h3>自然文で追加</h3><div className="compose"><input className="input" placeholder="例: 明日19時に歯医者 / 今週中に課題提出 / 昨日ランチで1200円" value={naturalText} disabled={saving} onChange={e => setNaturalText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && naturalText.trim() && !saving) { naturalAdd(naturalText); setNaturalText(''); } }} /><button className="btn" disabled={!naturalText.trim() || saving} onClick={() => { naturalAdd(naturalText); setNaturalText(''); }}>{saving ? '処理中...' : '追加'}</button></div></section>
-    <div className="grid"><button className="card metric-card" onClick={() => setTab('todo')}><span>未完了ToDo</span><b>{todos.filter((t: Todo) => t.status === 'open').length}</b></button><button className="card metric-card" onClick={() => setTab('expense')}><span>今月の支出</span><b>{yen(monthExpense)}</b></button></div>
   </>;
 }
 
