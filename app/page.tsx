@@ -315,6 +315,7 @@ export default function Page() {
       const ids = Array.from(new Set([personalId, data.activeSpaceId, data.groupId, ...(knownSpaceIds || []), ...(Array.isArray(data.joinedSpaceIds) ? data.joinedSpaceIds : [])].map(String).filter(Boolean)));
       const loaded = await Promise.all(ids.map(async id => {
         const memberSnap = await getDoc(doc(db, 'spaces', id, 'members', uid)).catch(() => null);
+        if (id !== personalId && !memberSnap?.exists()) return null;
         const member = memberSnap?.data();
         const spaceSnap = await getDoc(doc(db, 'spaces', id)).catch(() => null);
         const spaceData = spaceSnap?.data();
@@ -324,7 +325,7 @@ export default function Page() {
           type: (spaceData?.type || (id === personalId ? 'personal' : 'group')) as SpaceType
         };
       }));
-      const sorted = loaded.sort((a, b) => Number(a.type !== 'personal') - Number(b.type !== 'personal') || a.name.localeCompare(b.name, 'ja'));
+      const sorted = loaded.filter((space): space is SpaceSummary => Boolean(space)).sort((a, b) => Number(a.type !== 'personal') - Number(b.type !== 'personal') || a.name.localeCompare(b.name, 'ja'));
       setSpaces(sorted);
       await loadSpaceMembers(sorted);
     } catch (e) {

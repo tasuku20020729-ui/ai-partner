@@ -14,8 +14,7 @@ service cloud.firestore {
     }
     function inMyGroup(data) {
       return signedIn()
-        && (data.groupId == userGroup()
-          || exists(/databases/$(database)/documents/spaces/$(data.groupId)/members/$(request.auth.uid)));
+        && exists(/databases/$(database)/documents/spaces/$(data.groupId)/members/$(request.auth.uid));
     }
     function readableShared() {
       return inMyGroup(resource.data) && resource.data.visibility == 'shared';
