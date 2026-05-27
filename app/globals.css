@@ -964,7 +964,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .ai-screen {
   min-height: calc(100dvh - 168px);
   display: grid;
-  grid-template-rows: auto auto auto minmax(240px, 1fr) auto;
+  grid-template-rows: auto auto auto auto minmax(240px, 1fr) auto;
   gap: 12px;
   padding-bottom: 8px;
 }
@@ -1004,6 +1004,47 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   min-width: 0;
   overflow-wrap: anywhere;
   text-align: right;
+}
+.chat-session-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.chat-session-list {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.chat-session-list::-webkit-scrollbar { display: none; }
+.chat-session-list button {
+  flex: 0 0 auto;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 850;
+}
+.chat-session-list button.active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+.chat-session-actions {
+  display: flex;
+  gap: 6px;
+}
+.chat-session-actions .icon-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
 }
 .suggestion-chips {
   display: flex;
