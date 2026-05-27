@@ -516,7 +516,7 @@ export default function Page() {
   if (loading) return <div className="shell"><main className="content"><div className="card">読み込み中...</div></main></div>;
   if (!user) return <Login name={name} setName={setName} email={email} setEmail={setEmail} password={password} setPassword={setPassword} login={login} saving={saving} />;
 
-  return <div className="shell">
+  return <div className={`shell ${tab === 'ai' ? 'ai-shell' : ''}`}>
     <header className="top"><div className="brand"><div><h1>AI Life Diary v5</h1><p>カレンダー・ToDo・日記・支出</p></div><div className="avatar">{(user.displayName || user.email || 'U').slice(0, 1).toUpperCase()}</div></div></header>
     <main className="content">
       {loadError && <div className="error-card"><div><b>データを読み込めませんでした</b><p>{loadError}</p></div><button className="btn secondary" disabled={dataLoading} onClick={() => loadAll(user.uid, visibleSpaceIds.length ? visibleSpaceIds : groupId)}>{dataLoading ? '再読み込み中...' : '再読み込み'}</button></div>}
