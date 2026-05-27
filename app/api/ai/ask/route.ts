@@ -4,8 +4,17 @@ import { adminDb } from '@/lib/firebaseAdmin';
 import { cosineSimilarity, embedText } from '@/lib/rag';
 import { requireAuth, unauthorized } from '@/lib/serverAuth';
 
-type Body = { question: string; partnerName?: string; partnerRelationship?: string; currentUserId?: string; groupId?: string; spaceIds?: string[]; data: any };
+type ChatHistoryItem = { role: 'user' | 'ai'; content: string };
+type Body = { question: string; partnerName?: string; partnerRelationship?: string; currentUserId?: string; groupId?: string; spaceIds?: string[]; chatHistory?: ChatHistoryItem[]; data: any };
 type QuestionIntent = 'expense' | 'event' | 'todo' | 'diary' | 'memo' | 'anniversary' | 'out_of_scope' | 'unknown';
+type SearchPlan = {
+  contextualizedQuestion: string;
+  intent: QuestionIntent;
+  answerMode: 'summary' | 'detail' | 'aggregate' | 'search';
+  keywords: string[];
+  sourceTypes: string[];
+  ownerHint?: 'self' | 'partner' | 'all' | 'unknown';
+};
 const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 const DAY = 86400000;
 const today = () => new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
@@ -200,6 +209,62 @@ function filterExpenseCategory(q: string, expenses: any[]) {
   if (/医療|病院|薬|薬局|ドラッグストア|診察|歯医者|クリニック|処方|サプリ|コンタクト/.test(q)) return expenses.filter((e:any)=>e.category === 'medical');
   if (/娯楽|映画|ゲーム|ライブ|コンサート|イベント|本|漫画|サブスク|Netflix|Spotify|カラオケ|遊び|チケット/.test(q)) return expenses.filter((e:any)=>e.category === 'entertainment');
   return expenses;
+}
+function safeJsonObject(text: string) {
+  const trimmed = text.trim().replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
+  const match = trimmed.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  try { return JSON.parse(match[0]); } catch { return null; }
+}
+function fallbackSearchPlan(question: string): SearchPlan {
+  const intent = classifyQuestion(question);
+  return {
+    contextualizedQuestion: question,
+    intent,
+    answerMode: detailQuestion(question) ? 'detail' : /いくら|合計|平均|内訳/.test(question) ? 'aggregate' : 'summary',
+    keywords: detailHints(question),
+    sourceTypes: sourceTypesForIntent(intent),
+    ownerHint: wantsSelfOwner(question) ? 'self' : wantsAllOwners(question) ? 'all' : wantsPartnerOwner(question) ? 'partner' : 'unknown'
+  };
+}
+function sourceTypesForIntent(intent: QuestionIntent) {
+  if (intent === 'memo') return ['sharedNote'];
+  if (['diary', 'event', 'todo', 'expense', 'anniversary'].includes(intent)) return [intent];
+  return [];
+}
+function validIntent(value: unknown): QuestionIntent {
+  return ['expense', 'event', 'todo', 'diary', 'memo', 'anniversary', 'out_of_scope', 'unknown'].includes(String(value)) ? value as QuestionIntent : 'unknown';
+}
+function cleanStringList(value: unknown, limit = 12) {
+  return Array.isArray(value) ? value.map(v => String(v || '').trim()).filter(Boolean).slice(0, limit) : [];
+}
+async function buildSearchPlan(client: OpenAI, body: Body): Promise<SearchPlan> {
+  const fallback = fallbackSearchPlan(body.question || '');
+  try {
+    const history = (body.chatHistory || []).slice(-8).map(m => `${m.role === 'user' ? 'ユーザー' : 'AI'}: ${m.content}`).join('\n');
+    const res = await client.responses.create({
+      model,
+      input: [
+        { role: 'system', content: '生活管理アプリの検索計画をJSONだけで返します。会話履歴がある場合、「それ」「さっきの」「この前」などを具体化してください。intentはexpense,event,todo,diary,memo,anniversary,out_of_scope,unknown。answerModeはsummary,detail,aggregate,search。sourceTypesはdiary,event,todo,expense,anniversary,sharedNoteから選びます。推測しすぎず、生活データ検索に必要なキーワードを短く抽出してください。' },
+        { role: 'user', content: `会話履歴:\n${history || 'なし'}\n\n現在の質問:\n${body.question}\n\n返すJSONキー: contextualizedQuestion,intent,answerMode,keywords,sourceTypes,ownerHint` }
+      ]
+    });
+    const parsed = safeJsonObject(res.output_text || '');
+    if (!parsed) return fallback;
+    const intent = validIntent(parsed.intent);
+    const answerMode = ['summary', 'detail', 'aggregate', 'search'].includes(String(parsed.answerMode)) ? parsed.answerMode as SearchPlan['answerMode'] : fallback.answerMode;
+    const contextualizedQuestion = String(parsed.contextualizedQuestion || body.question || '').trim() || body.question;
+    return {
+      contextualizedQuestion,
+      intent,
+      answerMode,
+      keywords: cleanStringList(parsed.keywords).length ? cleanStringList(parsed.keywords) : detailHints(contextualizedQuestion),
+      sourceTypes: cleanStringList(parsed.sourceTypes).length ? cleanStringList(parsed.sourceTypes, 6) : sourceTypesForIntent(intent),
+      ownerHint: ['self', 'partner', 'all', 'unknown'].includes(String(parsed.ownerHint)) ? parsed.ownerHint : fallback.ownerHint
+    };
+  } catch {
+    return fallback;
+  }
 }
 function compactText(value: unknown) {
   return String(value || '').toLowerCase().replace(/\s+/g, '');
@@ -451,35 +516,53 @@ function deterministicAnswer(body: Body) {
   return null;
 }
 
-async function searchRagMemory(body: Body) {
+function keywordScoreForMemory(question: string, plan: SearchPlan | undefined, memory: any) {
+  const hints = Array.from(new Set([...(plan?.keywords || []), ...detailHints(question)].map(compactText).filter(Boolean)));
+  if (!hints.length) return 0;
+  const text = compactText([memory.title, memory.contentText, memory.ownerName, memory.spaceName, memory.date, memory.sourceType].filter(Boolean).join(' '));
+  return hints.reduce((score, hint) => score + (text.includes(hint) ? Math.min(8, hint.length) : 0), 0);
+}
+function sourceTypeMatchesPlan(plan: SearchPlan | undefined, sourceType: string) {
+  if (!plan?.sourceTypes?.length) return true;
+  return plan.sourceTypes.includes(sourceType);
+}
+async function searchRagMemory(body: Body, plan?: SearchPlan) {
   if (!body.groupId || !process.env.OPENAI_API_KEY) return { results: [] as any[], unavailable: true };
   try {
-    const qEmbedding = await embedText(body.question);
+    const searchQuestion = plan?.contextualizedQuestion || body.question;
+    const qEmbedding = await embedText([searchQuestion, ...(plan?.keywords || [])].filter(Boolean).join('\n'));
     const targetSpaceIds = Array.from(new Set((body.spaceIds?.length ? body.spaceIds : [body.groupId]).filter(Boolean))).slice(0, 30);
     const snaps = await Promise.all(targetSpaceIds.map(spaceId => adminDb().collection('aiMemory').where('groupId', '==', spaceId).get()));
-    const wantsAll = wantsAllOwners(body.question);
-    const wantsPartner = wantsPartnerOwner(body.question, body.partnerName, body.partnerRelationship);
-    const wantsSelf = wantsSelfOwner(body.question);
-    const memberIds = mentionedMemberIds(body.question, body.data?.members || []);
-    const hints = Array.from(body.question.matchAll(/([一-龥ぁ-んァ-ヶA-Za-z0-9]+)の/g)).map(match => match[1]).filter(Boolean);
-    const mentionedSpaces = Array.from(new Set(snaps.flatMap(snap => snap.docs.map(d => String(d.data().spaceName || ''))).filter(name => name && (body.question.includes(name) || hints.some(hint => name.includes(hint) || hint.includes(name))))));
+    const wantsAll = plan?.ownerHint === 'all' || wantsAllOwners(searchQuestion);
+    const wantsPartner = plan?.ownerHint === 'partner' || wantsPartnerOwner(searchQuestion, body.partnerName, body.partnerRelationship);
+    const wantsSelf = plan?.ownerHint === 'self' || wantsSelfOwner(searchQuestion);
+    const memberIds = mentionedMemberIds(searchQuestion, body.data?.members || []);
+    const hints = Array.from(searchQuestion.matchAll(/([一-龥ぁ-んァ-ヶA-Za-z0-9]+)の/g)).map(match => match[1]).filter(Boolean);
+    const mentionedSpaces = Array.from(new Set(snaps.flatMap(snap => snap.docs.map(d => String(d.data().spaceName || ''))).filter(name => name && (searchQuestion.includes(name) || hints.some(hint => name.includes(hint) || hint.includes(name))))));
     const candidates = snaps.flatMap(snap => snap.docs.map(d => ({ id: d.id, ...d.data() } as any))).filter((m:any) => {
       if (m.aiReadable === false) return false;
+      if (!sourceTypeMatchesPlan(plan, String(m.sourceType || ''))) return false;
       if (mentionedSpaces.length && !mentionedSpaces.includes(String(m.spaceName || ''))) return false;
       const isMine = m.userId === body.currentUserId;
       if (!isMine && m.visibility !== 'shared') return false;
       if (wantsAll) return true;
       if (memberIds.length) return memberIds.includes(String(m.userId || ''));
-      if (m.ownerName && body.question.includes(m.ownerName)) return true;
+      if (m.ownerName && searchQuestion.includes(m.ownerName)) return true;
       if (wantsPartner) return !isMine;
       if (wantsSelf) return isMine;
-      if (m.ownerName && /さん|くん|ちゃん/.test(body.question)) return body.question.includes(m.ownerName);
+      if (m.ownerName && /さん|くん|ちゃん/.test(searchQuestion)) return searchQuestion.includes(m.ownerName);
       return true;
     });
     const scored = candidates
       .filter((m:any) => Array.isArray(m.embedding))
-      .map((m:any) => ({ ...m, score: cosineSimilarity(qEmbedding, m.embedding) }))
-      .sort((a:any,b:any) => b.score - a.score)
+      .map((m:any) => {
+        const vectorScore = cosineSimilarity(qEmbedding, m.embedding);
+        const keywordScore = keywordScoreForMemory(searchQuestion, plan, m);
+        const sourceBoost = sourceTypeMatchesPlan(plan, String(m.sourceType || '')) && plan?.sourceTypes?.length ? 0.04 : 0;
+        const score = vectorScore + Math.min(0.35, keywordScore / 40) + sourceBoost;
+        return { ...m, score, vectorScore, keywordScore };
+      })
+      .sort((a:any,b:any) => b.score - a.score || b.keywordScore - a.keywordScore || String(b.date || '').localeCompare(String(a.date || '')))
       .slice(0, 18);
     return { results: scored, unavailable: false };
   } catch (e) {
@@ -532,13 +615,15 @@ export async function POST(req: Request) {
   }
   const requestedSpaceIds = rawBody.spaceIds?.filter(spaceId => auth.spaceIds.includes(spaceId));
   const body = { ...rawBody, currentUserId: auth.uid, groupId: auth.groupId, spaceIds: requestedSpaceIds?.length ? requestedSpaceIds : [auth.groupId] };
-  const intent = classifyQuestion(body.question || '');
-  const filtered = scoped(body);
-  const exactAnswer = deterministicAnswer(body);
-  if (exactAnswer) return Response.json({ answer: exactAnswer, deterministic: true, intent });
   if (!process.env.OPENAI_API_KEY) return Response.json({ answer: fallbackAnswer(body), fallback: true });
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const rag = await searchRagMemory(body);
+  const plan = await buildSearchPlan(client, body);
+  const plannedBody = { ...body, question: plan.contextualizedQuestion || body.question };
+  const intent = plan.intent !== 'unknown' ? plan.intent : classifyQuestion(plannedBody.question || '');
+  const filtered = scoped(plannedBody);
+  const exactAnswer = deterministicAnswer(plannedBody);
+  if (exactAnswer) return Response.json({ answer: exactAnswer, deterministic: true, intent, plan });
+  const rag = await searchRagMemory(plannedBody, plan);
   const compactData = {
     diaries: filtered.diaries.slice(0, 60),
     events: filtered.events.slice(0, 100),
@@ -562,8 +647,13 @@ export async function POST(req: Request) {
   const response = await client.responses.create({
     model,
     input: [
-      { role: 'system', content: `あなたはAI生活管理アプリのAIです。日記・予定・ToDo・支出・記念日・共有メモだけを根拠に日本語で回答します。今日=${new Date().toLocaleDateString('ja-JP',{timeZone:'Asia/Tokyo'})}。相手の名前=${body.partnerName || '未設定'}。相手との関係性=${body.partnerRelationship || '未設定'}。分類済み意図=${intent}。入力データ以外を推測しない。支出はamountBase(JPY)で計算し、必要なら内訳を示す。詳細質問では各種類の詳細項目を必ず確認する。日記はtitle/content/mood/tags/date、予定はtitle/description/location/startAt/endAt/remindAt、ToDoはtitle/description/dueAt/priority/status/remindAt、支出はtitle/shopName/memo/category/amount/amountBase/currency/paymentMethod/receiptItems、記念日はtitle/date/repeat/remindDaysBefore、メモはtitle/contentを具体的に答える。相手の名前・関係性・メンバーのaliases/relationshipLabelsで質問された場合は該当メンバーのデータとして扱う。intent=diary または曖昧な思い出検索・感情・キーワード検索ではRAG結果を優先し、日付や金額の厳密集計は構造化データを優先する。intent=out_of_scopeなら生活データに関する質問だけ回答できると伝える。` },
-      { role: 'user', content: `質問: ${body.question}
+      { role: 'system', content: `あなたはAI生活管理アプリのAIです。日記・予定・ToDo・支出・記念日・共有メモだけを根拠に日本語で回答します。今日=${new Date().toLocaleDateString('ja-JP',{timeZone:'Asia/Tokyo'})}。相手の名前=${body.partnerName || '未設定'}。相手との関係性=${body.partnerRelationship || '未設定'}。分類済み意図=${intent}。入力データ以外を推測しない。質問計画のcontextualizedQuestionとkeywordsを優先して、会話中の「それ」「さっきの」などを解決する。支出はamountBase(JPY)で計算し、必要なら内訳を示す。詳細質問では各種類の詳細項目を必ず確認する。日記はtitle/content/mood/tags/date、予定はtitle/description/location/startAt/endAt/remindAt、ToDoはtitle/description/dueAt/priority/status/remindAt、支出はtitle/shopName/memo/category/amount/amountBase/currency/paymentMethod/receiptItems、記念日はtitle/date/repeat/remindDaysBefore、メモはtitle/contentを具体的に答える。相手の名前・関係性・メンバーのaliases/relationshipLabelsで質問された場合は該当メンバーのデータとして扱う。intent=diary または曖昧な思い出検索・感情・キーワード検索ではRAG結果を優先し、日付や金額の厳密集計は構造化データを優先する。intent=out_of_scopeなら生活データに関する質問だけ回答できると伝える。` },
+      { role: 'user', content: `会話履歴(JSON):
+${JSON.stringify((body.chatHistory || []).slice(-8))}
+
+元の質問: ${body.question}
+質問計画(JSON):
+${JSON.stringify(plan)}
 
 期間推定: ${filtered.range ? `${iso(filtered.range.start)}〜${iso(filtered.range.end)}` : '指定なし'}
 
@@ -574,5 +664,5 @@ ${JSON.stringify(ragContext)}
 ${JSON.stringify(compactData)}` }
     ]
   });
-  return Response.json({ answer: response.output_text, intent, ragUsed: rag.results.length > 0, ragCount: rag.results.length, ragUnavailable: rag.unavailable });
+  return Response.json({ answer: response.output_text, intent, plan, ragUsed: rag.results.length > 0, ragCount: rag.results.length, ragUnavailable: rag.unavailable });
 }

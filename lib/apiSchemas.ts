@@ -38,6 +38,10 @@ export const askBodySchema = z.object({
   currentUserId: z.string().optional(),
   groupId: z.string().optional(),
   spaceIds: z.array(z.string().min(1)).max(30).optional(),
+  chatHistory: z.array(z.object({
+    role: z.enum(['user', 'ai']),
+    content: z.string().max(4000)
+  })).max(12).optional(),
   data: z.unknown().optional()
 });
 

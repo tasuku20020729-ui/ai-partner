@@ -932,6 +932,7 @@ export default function Page() {
     if (!q) return;
     if (saving) return;
 
+    const chatHistory = chat.slice(-8);
     setQuestion('');
     setChat(c => [...c, { role: 'user', content: q }]);
     setSaving(true);
@@ -949,6 +950,7 @@ export default function Page() {
           currentUserId: user.uid,
           groupId,
           spaceIds: visibleSpaceIds.length ? visibleSpaceIds : [groupId],
+          chatHistory,
           data: { ...visible, members: spaceMembers },
         }),
       });
