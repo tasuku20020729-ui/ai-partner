@@ -5,7 +5,7 @@ import { auth, db, storage } from '@/lib/firebase';
 import { createUserWithEmailAndPassword, onAuthStateChanged, signInWithEmailAndPassword, signOut, updateProfile, type User } from 'firebase/auth';
 import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, increment, onSnapshot, query, setDoc, updateDoc, where } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
-import { Bell, CalendarDays, CheckSquare, ChevronLeft, ChevronRight, Gift, Home, MessageCircle, NotebookPen, ReceiptText, Settings, StickyNote, Users, Copy, Share2 } from 'lucide-react';
+import { Bell, CalendarDays, CheckSquare, ChevronLeft, ChevronRight, Gift, Home, MessageCircle, NotebookPen, ReceiptText, Settings, StickyNote, Users, Copy, Share2, Plus, RotateCcw } from 'lucide-react';
 import { todayIso, toDateTimeLocalValue } from '@/lib/date';
 import { enablePwaPush } from '@/lib/push';
 import { personalSpaceId, personalSpaceName, scopeFieldsForSpace, sharedSpaceId } from '@/lib/spaces';
@@ -14,9 +14,39 @@ import type { Anniversary, Currency, Diary, EventItem, Expense, ExpenseCategory,
 type Tab = 'home' | 'diary' | 'calendar' | 'todo' | 'expense' | 'ai' | 'notes' | 'settings';
 type AddMode = 'diary' | 'event' | 'todo' | 'expense' | 'anniversary' | 'note' | null;
 type ChatMessage = { role: 'user' | 'ai'; content: string };
+type ChatSession = { id: string; title: string; messages: ChatMessage[]; createdAt: string; updatedAt: string };
 type EditTarget = { mode: Exclude<AddMode, null>; id: string; data: Record<string, any> } | null;
 type SpaceSummary = Pick<Space, 'id' | 'name' | 'type'>;
 type MemberProfile = SpaceMember & { spaceName?: string };
+const initialAiMessage = '日記・予定・ToDo・支出・記念日・共有メモを横断検索できます。例:「明後日の予定は？」「今週の課題は？」「先週いくら使った？」';
+const createChatSession = (): ChatSession => {
+  const now = new Date().toISOString();
+  const id = `chat_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  return { id, title: '新しい相談', messages: [{ role: 'ai', content: initialAiMessage }], createdAt: now, updatedAt: now };
+};
+const chatStorageKey = (uid: string) => `ai-life-chat-sessions:${uid}:v1`;
+const normalizeChatSessions = (value: unknown): ChatSession[] => {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 8).map((session: any) => ({
+    id: String(session.id || `chat_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`),
+    title: String(session.title || '新しい相談').slice(0, 40),
+    messages: (Array.isArray(session.messages)
+      ? session.messages
+        .filter((m: any) => ['user', 'ai'].includes(m?.role) && typeof m?.content === 'string')
+        .slice(-80)
+        .map((m: any) => ({ role: m.role as ChatMessage['role'], content: m.content }))
+      : [{ role: 'ai', content: initialAiMessage } as ChatMessage]),
+    createdAt: String(session.createdAt || new Date().toISOString()),
+    updatedAt: String(session.updatedAt || new Date().toISOString())
+  })).filter(session => session.messages.length);
+};
+const titleFromQuestion = (question: string, plan?: any) => {
+  const intentLabel: Record<string, string> = { event: '予定', todo: 'ToDo', expense: '支出', diary: '日記', anniversary: '記念日', memo: 'メモ' };
+  const keywords = Array.isArray(plan?.keywords) ? plan.keywords.map((v: unknown) => String(v || '').trim()).filter(Boolean).slice(0, 2) : [];
+  const label = intentLabel[String(plan?.intent || '')] || '';
+  const base = keywords.length ? `${keywords.join('・')}${label ? `の${label}` : ''}` : question.replace(/\s+/g, ' ').trim();
+  return (base || '新しい相談').slice(0, 24);
+};
 
 const categories: { value: ExpenseCategory; label: string }[] = [
   { value: 'food', label: '食費' }, { value: 'daily_goods', label: '日用品' }, { value: 'dating', label: '交際費' }, { value: 'transport', label: '交通費' }, { value: 'travel', label: '旅行' }, { value: 'medical', label: '医療費' }, { value: 'entertainment', label: '娯楽' }, { value: 'other', label: 'その他' }
@@ -177,7 +207,12 @@ export default function Page() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [anniversaries, setAnniversaries] = useState<Anniversary[]>([]);
   const [sharedNotes, setSharedNotes] = useState<SharedNote[]>([]);
-  const [chat, setChat] = useState<ChatMessage[]>([{ role: 'ai', content: '日記・予定・ToDo・支出・記念日・共有メモを横断検索できます。例:「明後日の予定は？」「今週の課題は？」「先週いくら使った？」' }]);
+  const [chatSessions, setChatSessions] = useState<ChatSession[]>(() => {
+    const session = createChatSession();
+    return [session];
+  });
+  const [activeChatSessionId, setActiveChatSessionId] = useState(() => chatSessions[0]?.id || '');
+  const [chatStorageReady, setChatStorageReady] = useState(false);
   const [question, setQuestion] = useState('');
   const [saving, setSaving] = useState(false);
   const [operationMessage, setOperationMessage] = useState('');
@@ -194,6 +229,33 @@ export default function Page() {
     return ids.length ? ids : (user ? [newGroupId(user.uid)] : []);
   }, [spaces, user?.uid]);
   const visibleSpaceIds = useMemo(() => viewAllSpaces ? activeSpaceIds : (groupId ? [groupId] : []), [activeSpaceIds, groupId, viewAllSpaces]);
+  const activeChatSession = useMemo(() => chatSessions.find(session => session.id === activeChatSessionId) || chatSessions[0], [chatSessions, activeChatSessionId]);
+  const chat = activeChatSession?.messages || [];
+
+  useEffect(() => {
+    if (!user?.uid) {
+      setChatStorageReady(false);
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(chatStorageKey(user.uid));
+      const parsed = raw ? normalizeChatSessions(JSON.parse(raw)) : [];
+      const sessions = parsed.length ? parsed : [createChatSession()];
+      setChatSessions(sessions);
+      setActiveChatSessionId(sessions[0].id);
+    } catch {
+      const session = createChatSession();
+      setChatSessions([session]);
+      setActiveChatSessionId(session.id);
+    } finally {
+      setChatStorageReady(true);
+    }
+  }, [user?.uid]);
+
+  useEffect(() => {
+    if (!user?.uid || !chatStorageReady) return;
+    window.localStorage.setItem(chatStorageKey(user.uid), JSON.stringify(chatSessions));
+  }, [chatSessions, chatStorageReady, user?.uid]);
 
   useEffect(() => onAuthStateChanged(auth, async (u) => {
     try {
@@ -434,6 +496,22 @@ export default function Page() {
     setCalendarMonth(date);
     setDatePickerOpen(true);
   };
+  const updateActiveChatSession = useCallback((updater: (session: ChatSession) => ChatSession) => {
+    setChatSessions(prev => prev.map(session => session.id === activeChatSessionId ? updater(session) : session));
+  }, [activeChatSessionId]);
+  const updateChatSession = useCallback((sessionId: string, updater: (session: ChatSession) => ChatSession) => {
+    setChatSessions(prev => prev.map(session => session.id === sessionId ? updater(session) : session));
+  }, []);
+  const startChatSession = useCallback(() => {
+    const session = createChatSession();
+    setChatSessions(prev => [session, ...prev].slice(0, 8));
+    setActiveChatSessionId(session.id);
+    setQuestion('');
+  }, []);
+  const resetActiveChatSession = useCallback(() => {
+    updateActiveChatSession(session => ({ ...session, title: '新しい相談', messages: [{ role: 'ai', content: initialAiMessage }], updatedAt: new Date().toISOString() }));
+    setQuestion('');
+  }, [updateActiveChatSession]);
 
   if (loading) return <div className="shell"><main className="content"><div className="card">読み込み中...</div></main></div>;
   if (!user) return <Login name={name} setName={setName} email={email} setEmail={setEmail} password={password} setPassword={setPassword} login={login} saving={saving} />;
@@ -450,7 +528,7 @@ export default function Page() {
       {tab === 'calendar' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} chooseDate={chooseDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} onEdit={openEdit} onDelete={remove} currentUserId={user.uid} naturalAdd={naturalAdd} setTab={setTab} saving={saving} spaces={spaces} groupId={groupId} viewAllSpaces={viewAllSpaces} activeSpaceIds={activeSpaceIds} switchSpace={switchSpace} switchAllSpaces={switchAllSpaces} />}
       {tab === 'todo' && <TodoView todos={todos} currentUserId={user.uid} toggleTodo={toggleTodo} onEdit={openEdit} onDelete={remove} />}
       {tab === 'expense' && <ExpenseView expenses={expenses} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} setAddMode={setAddMode} />}
-      {tab === 'ai' && <AIView chat={chat} question={question} setQuestion={setQuestion} ask={askAI} saving={saving} activeScopeName={viewAllSpaces ? `すべてのスペース（${activeSpaceIds.length || 1}件）` : activeSpaceName || personalSpaceName} />}
+      {tab === 'ai' && <AIView chat={chat} chatSessions={chatSessions} activeChatSessionId={activeChatSessionId} setActiveChatSessionId={setActiveChatSessionId} startChatSession={startChatSession} resetActiveChatSession={resetActiveChatSession} question={question} setQuestion={setQuestion} ask={askAI} saving={saving} activeScopeName={viewAllSpaces ? `すべてのスペース（${activeSpaceIds.length || 1}件）` : activeSpaceName || personalSpaceName} />}
       {tab === 'notes' && <NotesView notes={sharedNotes} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} setAddMode={setAddMode} />}
       {tab === 'settings' && <SettingsView user={user} groupId={groupId} shareEnabled={shareEnabled} activeSpaceName={activeSpaceName} spaces={spaces} spaceMembers={spaceMembers} setGroupId={saveGroupId} createSpace={createSpace} renameSpace={renameSpace} leaveSpace={leaveSpace} createInvite={createInviteForActiveSpace} revokeInvite={revokeInvite} joinInvite={joinInvite} partnerName={partnerName} partnerRelationship={partnerRelationship} savePartnerProfile={savePartnerProfile} saveMemberProfile={saveMemberProfile} reload={() => loadAll(user.uid, visibleSpaceIds.length ? visibleSpaceIds : groupId)} notificationEnabled={notificationEnabled} setNotificationEnabled={enableNotifications} pushStatus={pushStatus} enablePush={enablePushNotifications} repairSearchIndex={repairSearchIndex} saving={saving} sharedStats={sharedStats} />}
     </main>
@@ -932,8 +1010,12 @@ export default function Page() {
     if (!q) return;
     if (saving) return;
 
+    const chatHistory = chat.slice(-8);
+    const shouldRetitle = activeChatSession?.title === '新しい相談';
+    const nextTitle = shouldRetitle ? titleFromQuestion(q) : activeChatSession?.title;
+    const sessionId = activeChatSession?.id || activeChatSessionId;
     setQuestion('');
-    setChat(c => [...c, { role: 'user', content: q }]);
+    updateChatSession(sessionId, session => ({ ...session, title: nextTitle || session.title, messages: [...session.messages, { role: 'user', content: q }, { role: 'ai', content: '' }], updatedAt: new Date().toISOString() }));
     setSaving(true);
     setOperationError('');
     setOperationMessage('AIが回答を考えています...');
@@ -949,13 +1031,45 @@ export default function Page() {
           currentUserId: user.uid,
           groupId,
           spaceIds: visibleSpaceIds.length ? visibleSpaceIds : [groupId],
+          chatHistory,
+          stream: true,
           data: { ...visible, members: spaceMembers },
         }),
       });
-      const json = await res.json();
-      setChat(c => [...c, { role: 'ai', content: json.answer || '回答を生成できませんでした。' }]);
+      if (!res.ok || !res.body) throw new Error('AI回答に失敗しました');
+      const planHeader = res.headers.get('X-AI-Plan');
+      const plan = planHeader ? JSON.parse(decodeURIComponent(planHeader)) : undefined;
+      if (shouldRetitle) {
+        updateChatSession(sessionId, session => ({ ...session, title: titleFromQuestion(q, plan), updatedAt: new Date().toISOString() }));
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let answer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        answer += decoder.decode(value, { stream: true });
+        updateChatSession(sessionId, session => {
+          const messages = [...session.messages];
+          const lastIndex = messages.length - 1;
+          messages[lastIndex] = { role: 'ai', content: answer };
+          return { ...session, messages, updatedAt: new Date().toISOString() };
+        });
+      }
+      answer += decoder.decode();
+      updateChatSession(sessionId, session => {
+        const messages = [...session.messages];
+        const lastIndex = messages.length - 1;
+        messages[lastIndex] = { role: 'ai', content: answer || '回答を生成できませんでした。' };
+        return { ...session, messages, updatedAt: new Date().toISOString() };
+      });
     } catch {
-      setChat(c => [...c, { role: 'ai', content: 'AI回答に失敗しました。OPENAI_API_KEYを確認してください。' }]);
+      updateChatSession(sessionId, session => {
+        const messages = [...session.messages];
+        const lastIndex = messages.length - 1;
+        messages[lastIndex] = { role: 'ai', content: 'AI回答に失敗しました。OPENAI_API_KEYを確認してください。' };
+        return { ...session, messages, updatedAt: new Date().toISOString() };
+      });
     } finally {
       setOperationMessage('');
       setSaving(false);
@@ -1119,9 +1233,9 @@ function CalendarView({ events, anniversaries, currentUserId, onDelete, setAddMo
 function TodoView({ todos, currentUserId, toggleTodo, onEdit, onDelete }: any) { return <Section title="ToDo">{todos.map((t: Todo) => <article className="card" key={t.id}><label className="row"><span><input type="checkbox" checked={t.status === 'done'} disabled={t.userId !== currentUserId} onChange={() => toggleTodo(t)} /> <b className={t.status === 'done' ? 'done' : ''}>{t.title}</b></span><span>{t.priority}</span></label><p className="muted">期限: {t.dueAt || '-'} / {t.ownerName}</p>{t.remindAt && <p className="muted">リマインド: {new Date(t.remindAt).toLocaleString('ja-JP')}</p>}<p>{t.description}</p>{t.userId === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('todo', t)}>編集</button><button className="link" onClick={() => onDelete('todo', t.id)}>削除</button></div>}</article>)}</Section>; }
 function ExpenseView({ expenses, currentUserId, onEdit, onDelete, setAddMode }: any) { const total = expenses.reduce((s: number, e: Expense) => s + Number(e.amountBase || 0), 0); return <Section title="支出"><button className="btn" onClick={() => setAddMode('expense')}>支出を追加</button><div className="card"><h3>合計</h3><div className="big">{yen(total)}</div></div>{expenses.map((e: Expense) => <article className="card" key={e.id}><div className="row"><b>{e.title}</b><span>{e.amount.toLocaleString()} {e.currency}</span></div><p className="muted">{e.date} / {categoryLabel[e.category]} / {e.ownerName}</p><p>{e.memo}</p>{e.receiptImageUrl && <img className="photo" src={e.receiptImageUrl} alt="receipt" />}{e.userId === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('expense', e)}>編集</button><button className="link" onClick={() => onDelete('expense', e.id)}>削除</button></div>}</article>)}</Section>; }
 function NotesView({ notes, currentUserId, onEdit, onDelete, setAddMode }: any) { return <Section title="共有メモ"><button className="btn" onClick={() => setAddMode('note')}>共有メモ追加</button>{notes.map((n: SharedNote) => <article className="card" key={n.id}><b>{n.title}</b><p className="muted">{n.createdByName}</p><p>{n.content}</p>{n.createdBy === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('note', n)}>編集</button><button className="link" onClick={() => onDelete('note', n.id)}>削除</button></div>}</article>)}</Section>; }
-function AIView({ chat, question, setQuestion, ask, saving, activeScopeName }: any) {
+function AIView({ chat, chatSessions, activeChatSessionId, setActiveChatSessionId, startChatSession, resetActiveChatSession, question, setQuestion, ask, saving, activeScopeName }: any) {
   const suggestions = ['明日の予定は？', '未完了のToDoは？', '今月の支出を教えて', '次の記念日は？'];
-  return <section className="ai-screen"><div className="ai-header"><div className="space-avatar large"><MessageCircle size={24} /></div><div><p className="eyebrow">AIチャットbot</p><h2>生活データに質問</h2><p className="muted">予定、ToDo、日記、支出をまとめて確認できます。</p></div></div><div className="ai-scope"><span>参照中</span><b>{activeScopeName}</b></div><div className="suggestion-chips">{suggestions.map(text => <button key={text} disabled={saving} onClick={() => ask(text)}>{text}</button>)}</div><div className="chat ai-chat">{chat.map((m: ChatMessage, i: number) => <div key={i} className={`bubble ${m.role}`}>{m.content}</div>)}</div><div className="ai-compose"><input className="input" placeholder="例: 明後日の予定は？" value={question} disabled={saving} onChange={e => setQuestion(e.target.value)} onKeyDown={e => e.key === 'Enter' && !saving && ask()} /><button className="btn" disabled={saving || !question.trim()} onClick={() => ask()}>{saving ? '...' : '送信'}</button></div></section>;
+  return <section className="ai-screen"><div className="ai-header"><div className="space-avatar large"><MessageCircle size={24} /></div><div><p className="eyebrow">AIチャットbot</p><h2>生活データに質問</h2><p className="muted">予定、ToDo、日記、支出をまとめて確認できます。</p></div></div><div className="ai-scope"><span>参照中</span><b>{activeScopeName}</b></div><div className="chat-session-bar"><div className="chat-session-list">{chatSessions.map((session: ChatSession) => <button key={session.id} className={session.id === activeChatSessionId ? 'active' : ''} disabled={saving} onClick={() => setActiveChatSessionId(session.id)}>{session.title}</button>)}</div><div className="chat-session-actions"><button className="icon-btn" disabled={saving} title="新しいチャット" onClick={startChatSession}><Plus size={17} /></button><button className="icon-btn" disabled={saving} title="このチャットをリセット" onClick={resetActiveChatSession}><RotateCcw size={16} /></button></div></div><div className="suggestion-chips">{suggestions.map(text => <button key={text} disabled={saving} onClick={() => ask(text)}>{text}</button>)}</div><div className="chat ai-chat">{chat.map((m: ChatMessage, i: number) => <div key={i} className={`bubble ${m.role}`}>{m.content}</div>)}</div><div className="ai-compose"><textarea className="input" rows={1} placeholder="例: 明後日の予定は？" value={question} disabled={saving} onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !saving) { e.preventDefault(); ask(); } }} /><button className="btn" disabled={saving || !question.trim()} onClick={() => ask()}>{saving ? '...' : '送信'}</button></div></section>;
 }
 
 function ShareBadge({ item, currentUserId }: { item: { userId?: string; visibility?: Visibility; ownerName?: string }; currentUserId: string }) {
