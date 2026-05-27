@@ -5,7 +5,7 @@ import { cosineSimilarity, embedText } from '@/lib/rag';
 import { requireAuth, unauthorized } from '@/lib/serverAuth';
 
 type ChatHistoryItem = { role: 'user' | 'ai'; content: string };
-type Body = { question: string; partnerName?: string; partnerRelationship?: string; currentUserId?: string; groupId?: string; spaceIds?: string[]; chatHistory?: ChatHistoryItem[]; data: any };
+type Body = { question: string; partnerName?: string; partnerRelationship?: string; currentUserId?: string; groupId?: string; spaceIds?: string[]; chatHistory?: ChatHistoryItem[]; stream?: boolean; data: any };
 type QuestionIntent = 'expense' | 'event' | 'todo' | 'diary' | 'memo' | 'anniversary' | 'out_of_scope' | 'unknown';
 type SearchPlan = {
   contextualizedQuestion: string;
@@ -598,6 +598,85 @@ function fallbackAnswer(body: Body) {
   return list || '関連データが見つかりませんでした。';
 }
 
+function streamText(text: string, extraHeaders?: Record<string, string>) {
+  const encoder = new TextEncoder();
+  return new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(text));
+      controller.close();
+    }
+  }), {
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      'X-Accel-Buffering': 'no',
+      ...(extraHeaders || {})
+    }
+  });
+}
+
+async function streamOpenAIResponse(input: any[], plan: SearchPlan, intent: QuestionIntent, rag: { results: any[]; unavailable?: boolean }) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return streamText('AI回答に失敗しました。OPENAI_API_KEYを確認してください。');
+  const encoder = new TextEncoder();
+  const upstream = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ model, input, stream: true })
+  });
+  if (!upstream.ok || !upstream.body) {
+    const message = await upstream.text().catch(() => '');
+    return streamText(message || 'AI回答に失敗しました。');
+  }
+  const decoder = new TextDecoder();
+  return new Response(new ReadableStream({
+    async start(controller) {
+      const reader = upstream.body!.getReader();
+      let buffer = '';
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const events = buffer.split('\n\n');
+          buffer = events.pop() || '';
+          for (const event of events) {
+            const lines = event.split('\n').filter(line => line.startsWith('data:'));
+            for (const line of lines) {
+              const data = line.slice(5).trim();
+              if (!data || data === '[DONE]') continue;
+              try {
+                const json = JSON.parse(data);
+                const delta = json.type === 'response.output_text.delta' ? json.delta : '';
+                if (delta) controller.enqueue(encoder.encode(delta));
+              } catch {
+                // Ignore malformed SSE fragments and keep the stream alive.
+              }
+            }
+          }
+        }
+      } catch {
+        controller.enqueue(encoder.encode('\n\nAI回答の受信中にエラーが発生しました。'));
+      } finally {
+        controller.close();
+      }
+    }
+  }), {
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      'X-Accel-Buffering': 'no',
+      'X-AI-Intent': intent,
+      'X-AI-Plan': encodeURIComponent(JSON.stringify(plan)),
+      'X-AI-RAG-Count': String(rag.results.length),
+      'X-AI-RAG-Unavailable': rag.unavailable ? 'true' : 'false'
+    }
+  });
+}
+
 export async function POST(req: Request) {
   let auth: Awaited<ReturnType<typeof requireAuth>>;
   try {
@@ -609,20 +688,23 @@ export async function POST(req: Request) {
   try {
     rawBody = askBodySchema.parse(await req.json()) as Body;
   } catch (e) {
-    const invalid = validationError(e);
+  const invalid = validationError(e);
     if (invalid) return invalid;
     throw e;
   }
   const requestedSpaceIds = rawBody.spaceIds?.filter(spaceId => auth.spaceIds.includes(spaceId));
   const body = { ...rawBody, currentUserId: auth.uid, groupId: auth.groupId, spaceIds: requestedSpaceIds?.length ? requestedSpaceIds : [auth.groupId] };
-  if (!process.env.OPENAI_API_KEY) return Response.json({ answer: fallbackAnswer(body), fallback: true });
+  if (!process.env.OPENAI_API_KEY) {
+    const answer = fallbackAnswer(body);
+    return body.stream ? streamText(answer) : Response.json({ answer, fallback: true });
+  }
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const plan = await buildSearchPlan(client, body);
   const plannedBody = { ...body, question: plan.contextualizedQuestion || body.question };
   const intent = plan.intent !== 'unknown' ? plan.intent : classifyQuestion(plannedBody.question || '');
   const filtered = scoped(plannedBody);
   const exactAnswer = deterministicAnswer(plannedBody);
-  if (exactAnswer) return Response.json({ answer: exactAnswer, deterministic: true, intent, plan });
+  if (exactAnswer) return body.stream ? streamText(exactAnswer, { 'X-AI-Intent': intent, 'X-AI-Plan': encodeURIComponent(JSON.stringify(plan)) }) : Response.json({ answer: exactAnswer, deterministic: true, intent, plan });
   const rag = await searchRagMemory(plannedBody, plan);
   const compactData = {
     diaries: filtered.diaries.slice(0, 60),
@@ -644,11 +726,9 @@ export async function POST(req: Request) {
     title: m.title,
     text: m.contentText
   }));
-  const response = await client.responses.create({
-    model,
-    input: [
-      { role: 'system', content: `あなたはAI生活管理アプリのAIです。日記・予定・ToDo・支出・記念日・共有メモだけを根拠に日本語で回答します。今日=${new Date().toLocaleDateString('ja-JP',{timeZone:'Asia/Tokyo'})}。相手の名前=${body.partnerName || '未設定'}。相手との関係性=${body.partnerRelationship || '未設定'}。分類済み意図=${intent}。入力データ以外を推測しない。質問計画のcontextualizedQuestionとkeywordsを優先して、会話中の「それ」「さっきの」などを解決する。支出はamountBase(JPY)で計算し、必要なら内訳を示す。詳細質問では各種類の詳細項目を必ず確認する。日記はtitle/content/mood/tags/date、予定はtitle/description/location/startAt/endAt/remindAt、ToDoはtitle/description/dueAt/priority/status/remindAt、支出はtitle/shopName/memo/category/amount/amountBase/currency/paymentMethod/receiptItems、記念日はtitle/date/repeat/remindDaysBefore、メモはtitle/contentを具体的に答える。相手の名前・関係性・メンバーのaliases/relationshipLabelsで質問された場合は該当メンバーのデータとして扱う。intent=diary または曖昧な思い出検索・感情・キーワード検索ではRAG結果を優先し、日付や金額の厳密集計は構造化データを優先する。intent=out_of_scopeなら生活データに関する質問だけ回答できると伝える。` },
-      { role: 'user', content: `会話履歴(JSON):
+  const input = [
+    { role: 'system', content: `あなたはAI生活管理アプリのAIです。日記・予定・ToDo・支出・記念日・共有メモだけを根拠に日本語で回答します。今日=${new Date().toLocaleDateString('ja-JP',{timeZone:'Asia/Tokyo'})}。相手の名前=${body.partnerName || '未設定'}。相手との関係性=${body.partnerRelationship || '未設定'}。分類済み意図=${intent}。入力データ以外を推測しない。質問計画のcontextualizedQuestionとkeywordsを優先して、会話中の「それ」「さっきの」などを解決する。支出はamountBase(JPY)で計算し、必要なら内訳を示す。詳細質問では各種類の詳細項目を必ず確認する。日記はtitle/content/mood/tags/date、予定はtitle/description/location/startAt/endAt/remindAt、ToDoはtitle/description/dueAt/priority/status/remindAt、支出はtitle/shopName/memo/category/amount/amountBase/currency/paymentMethod/receiptItems、記念日はtitle/date/repeat/remindDaysBefore、メモはtitle/contentを具体的に答える。相手の名前・関係性・メンバーのaliases/relationshipLabelsで質問された場合は該当メンバーのデータとして扱う。intent=diary または曖昧な思い出検索・感情・キーワード検索ではRAG結果を優先し、日付や金額の厳密集計は構造化データを優先する。intent=out_of_scopeなら生活データに関する質問だけ回答できると伝える。` },
+    { role: 'user', content: `会話履歴(JSON):
 ${JSON.stringify((body.chatHistory || []).slice(-8))}
 
 元の質問: ${body.question}
@@ -662,7 +742,8 @@ ${JSON.stringify(ragContext)}
 
 構造化データ(JSON):
 ${JSON.stringify(compactData)}` }
-    ]
-  });
+  ];
+  if (body.stream) return streamOpenAIResponse(input, plan, intent, rag);
+  const response = await client.responses.create({ model, input: input as any });
   return Response.json({ answer: response.output_text, intent, plan, ragUsed: rag.results.length > 0, ragCount: rag.results.length, ragUnavailable: rag.unavailable });
 }

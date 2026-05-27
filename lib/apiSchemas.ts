@@ -42,6 +42,7 @@ export const askBodySchema = z.object({
     role: z.enum(['user', 'ai']),
     content: z.string().max(4000)
   })).max(12).optional(),
+  stream: z.boolean().optional(),
   data: z.unknown().optional()
 });
 

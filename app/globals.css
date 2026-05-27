@@ -1087,6 +1087,10 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .bubble.user { align-self: flex-end; background: var(--brand); color: #fff; }
 .bubble.ai { align-self: flex-start; background: var(--surface); border: 1px solid var(--hairline); }
+.bubble.ai:empty::after {
+  content: '...';
+  color: var(--muted);
+}
 .compose { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
 .chat-compose { margin-top: 12px; }
 .compose .input { margin: 0; }
@@ -1107,6 +1111,10 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   margin: 0;
   border-radius: 8px;
   background: #fff;
+  min-height: 44px;
+  max-height: 128px;
+  resize: vertical;
+  line-height: 1.5;
 }
 .ai-compose .btn {
   min-height: 44px;

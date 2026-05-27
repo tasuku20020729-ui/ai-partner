@@ -24,6 +24,29 @@ const createChatSession = (): ChatSession => {
   const id = `chat_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   return { id, title: '新しい相談', messages: [{ role: 'ai', content: initialAiMessage }], createdAt: now, updatedAt: now };
 };
+const chatStorageKey = (uid: string) => `ai-life-chat-sessions:${uid}:v1`;
+const normalizeChatSessions = (value: unknown): ChatSession[] => {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 8).map((session: any) => ({
+    id: String(session.id || `chat_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`),
+    title: String(session.title || '新しい相談').slice(0, 40),
+    messages: (Array.isArray(session.messages)
+      ? session.messages
+        .filter((m: any) => ['user', 'ai'].includes(m?.role) && typeof m?.content === 'string')
+        .slice(-80)
+        .map((m: any) => ({ role: m.role as ChatMessage['role'], content: m.content }))
+      : [{ role: 'ai', content: initialAiMessage } as ChatMessage]),
+    createdAt: String(session.createdAt || new Date().toISOString()),
+    updatedAt: String(session.updatedAt || new Date().toISOString())
+  })).filter(session => session.messages.length);
+};
+const titleFromQuestion = (question: string, plan?: any) => {
+  const intentLabel: Record<string, string> = { event: '予定', todo: 'ToDo', expense: '支出', diary: '日記', anniversary: '記念日', memo: 'メモ' };
+  const keywords = Array.isArray(plan?.keywords) ? plan.keywords.map((v: unknown) => String(v || '').trim()).filter(Boolean).slice(0, 2) : [];
+  const label = intentLabel[String(plan?.intent || '')] || '';
+  const base = keywords.length ? `${keywords.join('・')}${label ? `の${label}` : ''}` : question.replace(/\s+/g, ' ').trim();
+  return (base || '新しい相談').slice(0, 24);
+};
 
 const categories: { value: ExpenseCategory; label: string }[] = [
   { value: 'food', label: '食費' }, { value: 'daily_goods', label: '日用品' }, { value: 'dating', label: '交際費' }, { value: 'transport', label: '交通費' }, { value: 'travel', label: '旅行' }, { value: 'medical', label: '医療費' }, { value: 'entertainment', label: '娯楽' }, { value: 'other', label: 'その他' }
@@ -189,6 +212,7 @@ export default function Page() {
     return [session];
   });
   const [activeChatSessionId, setActiveChatSessionId] = useState(() => chatSessions[0]?.id || '');
+  const [chatStorageReady, setChatStorageReady] = useState(false);
   const [question, setQuestion] = useState('');
   const [saving, setSaving] = useState(false);
   const [operationMessage, setOperationMessage] = useState('');
@@ -207,6 +231,31 @@ export default function Page() {
   const visibleSpaceIds = useMemo(() => viewAllSpaces ? activeSpaceIds : (groupId ? [groupId] : []), [activeSpaceIds, groupId, viewAllSpaces]);
   const activeChatSession = useMemo(() => chatSessions.find(session => session.id === activeChatSessionId) || chatSessions[0], [chatSessions, activeChatSessionId]);
   const chat = activeChatSession?.messages || [];
+
+  useEffect(() => {
+    if (!user?.uid) {
+      setChatStorageReady(false);
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(chatStorageKey(user.uid));
+      const parsed = raw ? normalizeChatSessions(JSON.parse(raw)) : [];
+      const sessions = parsed.length ? parsed : [createChatSession()];
+      setChatSessions(sessions);
+      setActiveChatSessionId(sessions[0].id);
+    } catch {
+      const session = createChatSession();
+      setChatSessions([session]);
+      setActiveChatSessionId(session.id);
+    } finally {
+      setChatStorageReady(true);
+    }
+  }, [user?.uid]);
+
+  useEffect(() => {
+    if (!user?.uid || !chatStorageReady) return;
+    window.localStorage.setItem(chatStorageKey(user.uid), JSON.stringify(chatSessions));
+  }, [chatSessions, chatStorageReady, user?.uid]);
 
   useEffect(() => onAuthStateChanged(auth, async (u) => {
     try {
@@ -450,6 +499,9 @@ export default function Page() {
   const updateActiveChatSession = useCallback((updater: (session: ChatSession) => ChatSession) => {
     setChatSessions(prev => prev.map(session => session.id === activeChatSessionId ? updater(session) : session));
   }, [activeChatSessionId]);
+  const updateChatSession = useCallback((sessionId: string, updater: (session: ChatSession) => ChatSession) => {
+    setChatSessions(prev => prev.map(session => session.id === sessionId ? updater(session) : session));
+  }, []);
   const startChatSession = useCallback(() => {
     const session = createChatSession();
     setChatSessions(prev => [session, ...prev].slice(0, 8));
@@ -959,9 +1011,11 @@ export default function Page() {
     if (saving) return;
 
     const chatHistory = chat.slice(-8);
-    const nextTitle = activeChatSession?.title === '新しい相談' ? (q.length > 22 ? `${q.slice(0, 22)}...` : q) : activeChatSession?.title;
+    const shouldRetitle = activeChatSession?.title === '新しい相談';
+    const nextTitle = shouldRetitle ? titleFromQuestion(q) : activeChatSession?.title;
+    const sessionId = activeChatSession?.id || activeChatSessionId;
     setQuestion('');
-    updateActiveChatSession(session => ({ ...session, title: nextTitle || session.title, messages: [...session.messages, { role: 'user', content: q }], updatedAt: new Date().toISOString() }));
+    updateChatSession(sessionId, session => ({ ...session, title: nextTitle || session.title, messages: [...session.messages, { role: 'user', content: q }, { role: 'ai', content: '' }], updatedAt: new Date().toISOString() }));
     setSaving(true);
     setOperationError('');
     setOperationMessage('AIが回答を考えています...');
@@ -978,13 +1032,44 @@ export default function Page() {
           groupId,
           spaceIds: visibleSpaceIds.length ? visibleSpaceIds : [groupId],
           chatHistory,
+          stream: true,
           data: { ...visible, members: spaceMembers },
         }),
       });
-      const json = await res.json();
-      updateActiveChatSession(session => ({ ...session, messages: [...session.messages, { role: 'ai', content: json.answer || '回答を生成できませんでした。' }], updatedAt: new Date().toISOString() }));
+      if (!res.ok || !res.body) throw new Error('AI回答に失敗しました');
+      const planHeader = res.headers.get('X-AI-Plan');
+      const plan = planHeader ? JSON.parse(decodeURIComponent(planHeader)) : undefined;
+      if (shouldRetitle) {
+        updateChatSession(sessionId, session => ({ ...session, title: titleFromQuestion(q, plan), updatedAt: new Date().toISOString() }));
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let answer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        answer += decoder.decode(value, { stream: true });
+        updateChatSession(sessionId, session => {
+          const messages = [...session.messages];
+          const lastIndex = messages.length - 1;
+          messages[lastIndex] = { role: 'ai', content: answer };
+          return { ...session, messages, updatedAt: new Date().toISOString() };
+        });
+      }
+      answer += decoder.decode();
+      updateChatSession(sessionId, session => {
+        const messages = [...session.messages];
+        const lastIndex = messages.length - 1;
+        messages[lastIndex] = { role: 'ai', content: answer || '回答を生成できませんでした。' };
+        return { ...session, messages, updatedAt: new Date().toISOString() };
+      });
     } catch {
-      updateActiveChatSession(session => ({ ...session, messages: [...session.messages, { role: 'ai', content: 'AI回答に失敗しました。OPENAI_API_KEYを確認してください。' }], updatedAt: new Date().toISOString() }));
+      updateChatSession(sessionId, session => {
+        const messages = [...session.messages];
+        const lastIndex = messages.length - 1;
+        messages[lastIndex] = { role: 'ai', content: 'AI回答に失敗しました。OPENAI_API_KEYを確認してください。' };
+        return { ...session, messages, updatedAt: new Date().toISOString() };
+      });
     } finally {
       setOperationMessage('');
       setSaving(false);
@@ -1150,7 +1235,7 @@ function ExpenseView({ expenses, currentUserId, onEdit, onDelete, setAddMode }: 
 function NotesView({ notes, currentUserId, onEdit, onDelete, setAddMode }: any) { return <Section title="共有メモ"><button className="btn" onClick={() => setAddMode('note')}>共有メモ追加</button>{notes.map((n: SharedNote) => <article className="card" key={n.id}><b>{n.title}</b><p className="muted">{n.createdByName}</p><p>{n.content}</p>{n.createdBy === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('note', n)}>編集</button><button className="link" onClick={() => onDelete('note', n.id)}>削除</button></div>}</article>)}</Section>; }
 function AIView({ chat, chatSessions, activeChatSessionId, setActiveChatSessionId, startChatSession, resetActiveChatSession, question, setQuestion, ask, saving, activeScopeName }: any) {
   const suggestions = ['明日の予定は？', '未完了のToDoは？', '今月の支出を教えて', '次の記念日は？'];
-  return <section className="ai-screen"><div className="ai-header"><div className="space-avatar large"><MessageCircle size={24} /></div><div><p className="eyebrow">AIチャットbot</p><h2>生活データに質問</h2><p className="muted">予定、ToDo、日記、支出をまとめて確認できます。</p></div></div><div className="ai-scope"><span>参照中</span><b>{activeScopeName}</b></div><div className="chat-session-bar"><div className="chat-session-list">{chatSessions.map((session: ChatSession) => <button key={session.id} className={session.id === activeChatSessionId ? 'active' : ''} disabled={saving} onClick={() => setActiveChatSessionId(session.id)}>{session.title}</button>)}</div><div className="chat-session-actions"><button className="icon-btn" disabled={saving} title="新しいチャット" onClick={startChatSession}><Plus size={17} /></button><button className="icon-btn" disabled={saving} title="このチャットをリセット" onClick={resetActiveChatSession}><RotateCcw size={16} /></button></div></div><div className="suggestion-chips">{suggestions.map(text => <button key={text} disabled={saving} onClick={() => ask(text)}>{text}</button>)}</div><div className="chat ai-chat">{chat.map((m: ChatMessage, i: number) => <div key={i} className={`bubble ${m.role}`}>{m.content}</div>)}</div><div className="ai-compose"><input className="input" placeholder="例: 明後日の予定は？" value={question} disabled={saving} onChange={e => setQuestion(e.target.value)} onKeyDown={e => e.key === 'Enter' && !saving && ask()} /><button className="btn" disabled={saving || !question.trim()} onClick={() => ask()}>{saving ? '...' : '送信'}</button></div></section>;
+  return <section className="ai-screen"><div className="ai-header"><div className="space-avatar large"><MessageCircle size={24} /></div><div><p className="eyebrow">AIチャットbot</p><h2>生活データに質問</h2><p className="muted">予定、ToDo、日記、支出をまとめて確認できます。</p></div></div><div className="ai-scope"><span>参照中</span><b>{activeScopeName}</b></div><div className="chat-session-bar"><div className="chat-session-list">{chatSessions.map((session: ChatSession) => <button key={session.id} className={session.id === activeChatSessionId ? 'active' : ''} disabled={saving} onClick={() => setActiveChatSessionId(session.id)}>{session.title}</button>)}</div><div className="chat-session-actions"><button className="icon-btn" disabled={saving} title="新しいチャット" onClick={startChatSession}><Plus size={17} /></button><button className="icon-btn" disabled={saving} title="このチャットをリセット" onClick={resetActiveChatSession}><RotateCcw size={16} /></button></div></div><div className="suggestion-chips">{suggestions.map(text => <button key={text} disabled={saving} onClick={() => ask(text)}>{text}</button>)}</div><div className="chat ai-chat">{chat.map((m: ChatMessage, i: number) => <div key={i} className={`bubble ${m.role}`}>{m.content}</div>)}</div><div className="ai-compose"><textarea className="input" rows={1} placeholder="例: 明後日の予定は？" value={question} disabled={saving} onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !saving) { e.preventDefault(); ask(); } }} /><button className="btn" disabled={saving || !question.trim()} onClick={() => ask()}>{saving ? '...' : '送信'}</button></div></section>;
 }
 
 function ShareBadge({ item, currentUserId }: { item: { userId?: string; visibility?: Visibility; ownerName?: string }; currentUserId: string }) {
