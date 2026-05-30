@@ -19,7 +19,7 @@ type ChatSession = { id: string; title: string; messages: ChatMessage[]; created
 type EditTarget = { mode: Exclude<AddMode, null>; id: string; data: Record<string, any> } | null;
 type SpaceSummary = Pick<Space, 'id' | 'name' | 'type'>;
 type MemberProfile = SpaceMember & { spaceName?: string };
-type TodoPriorityPlan = Record<string, { rank: number; score: number; reason: string }>;
+type TodoPriorityPlan = Record<string, { rank: number; score: number; reason: string; suggestedPriority?: Todo['priority']; bucket?: 'today' | 'week' | 'later' | 'done'; chips?: string[]; subtasks?: string[] }>;
 const initialAiMessage = '日記・予定・ToDo・支出・記念日・共有メモを横断検索できます。例:「明後日の予定は？」「今週の課題は？」「先週いくら使った？」';
 const createChatSession = (): ChatSession => {
   const now = new Date().toISOString();
@@ -126,6 +126,28 @@ function recurringExpensesInMonth(expenses: Expense[], monthIso: string) {
   const [year, month] = monthIso.slice(0, 7).split('-').map(Number);
   const days = new Date(Date.UTC(year, month, 0)).getUTCDate();
   return Array.from({ length: days }, (_, i) => dateFromMonthDay(monthIso, i + 1)).flatMap(date => expenses.map(expense => expenseOnDate(expense, date)).filter(Boolean) as Expense[]);
+}
+const todoUrgentWords = /急ぎ|至急|重要|今日|明日|締切|期限|提出|支払|支払い|予約|確認|連絡|申請|更新|準備|買う|購入|忘れ/;
+function localTodoRank(todos: Todo[], today = todayIso()): Array<TodoPriorityPlan[string] & { id: string; todo: Todo }> {
+  const base = new Date(`${today}T00:00:00+09:00`).getTime();
+  const dueDiff = (value?: string) => {
+    if (!value) return null;
+    const at = new Date(`${value.slice(0, 10)}T00:00:00+09:00`).getTime();
+    return Number.isNaN(at) ? null : Math.round((at - base) / 86400000);
+  };
+  const dueScore = (diff: number | null) => diff === null ? 4 : diff < 0 ? 72 : diff === 0 ? 64 : diff === 1 ? 52 : diff <= 3 ? 36 : diff <= 7 ? 22 : diff <= 14 ? 12 : 6;
+  const priorityScore = { high: 38, middle: 20, low: 8 } as Record<string, number>;
+  return todos.filter(todo => todo.status !== 'done').map(todo => {
+    const diff = dueDiff(todo.dueAt);
+    const text = `${todo.title || ''} ${todo.description || ''}`;
+    const wordScore = /今日|本日|至急|すぐ/.test(text) ? 38 : todoUrgentWords.test(text) ? 16 : 0;
+    const score = dueScore(diff) + (priorityScore[todo.priority] || 20) + wordScore + (todo.reminderEnabled && todo.remindAt ? 8 : 0);
+    const bucket = (/今日|本日|至急|すぐ/.test(text) ? 'today' : diff !== null && diff <= 1 ? 'today' : score >= 78 ? 'today' : diff !== null && diff <= 7 ? 'week' : score >= 52 ? 'week' : 'later') as TodoPriorityPlan[string]['bucket'];
+    const suggestedPriority = (score >= 76 ? 'high' : score >= 42 ? 'middle' : 'low') as Todo['priority'];
+    const chips = [diff !== null && diff < 0 ? '期限超過' : '', diff === 0 ? '今日中' : '', diff === 1 ? '明日まで' : '', diff === null ? '期限なし' : '', todo.priority === 'high' ? '重要' : ''].filter(Boolean);
+    const reason = diff === null ? '期限未設定 / 内容と優先度から判定' : diff < 0 ? `期限を${Math.abs(diff)}日超過` : diff === 0 ? '今日が期限' : `${diff}日後が期限`;
+    return { id: todo.id, todo, rank: 0, score, reason, suggestedPriority, bucket, chips };
+  }).sort((a, b) => b.score - a.score).map((item, index) => ({ ...item, rank: index + 1 }));
 }
 const compactSearchText = (value: unknown) => String(value || '').toLowerCase().replace(/\s+/g, '');
 const relatedHints = (question: string, answer: string) => Array.from(new Set(`${question}\n${answer}`
@@ -551,6 +573,7 @@ export default function Page() {
     };
   }, [diaries, events, todos, expenses, anniversaries, sharedNotes, user?.uid]);
   const openTodos = todos.filter(t => t.status === 'open');
+  const recommendedTodos = useMemo(() => localTodoRank(visible.todos).slice(0, 5), [visible.todos]);
   const todayEvents = events.map(e => eventOnDate(e, todayIso())).filter(Boolean) as EventItem[];
   const memoryCards = buildMemoryCards(diaries, expenses, events, anniversaries);
   const reminderCards = buildReminderCards(todos, events, anniversaries);
@@ -626,8 +649,8 @@ export default function Page() {
       });
       const json = await res.json();
       if (!res.ok || !Array.isArray(json.items)) throw new Error(json.error || 'ToDoのAI整理に失敗しました');
-      const nextPlan = json.items.reduce((acc: TodoPriorityPlan, item: { id?: string; score?: number; reason?: string }, index: number) => {
-        if (item.id) acc[item.id] = { rank: index + 1, score: Number(item.score || 0), reason: String(item.reason || '') };
+      const nextPlan = json.items.reduce((acc: TodoPriorityPlan, item: { id?: string; score?: number; reason?: string; suggestedPriority?: Todo['priority']; bucket?: TodoPriorityPlan[string]['bucket']; chips?: string[]; subtasks?: string[] }, index: number) => {
+        if (item.id) acc[item.id] = { rank: index + 1, score: Number(item.score || 0), reason: String(item.reason || ''), suggestedPriority: item.suggestedPriority, bucket: item.bucket, chips: item.chips, subtasks: item.subtasks };
         return acc;
       }, {});
       setTodoPriorityPlan(nextPlan);
@@ -641,6 +664,33 @@ export default function Page() {
       setSaving(false);
     }
   }, [saving, user, visible.events, visible.todos]);
+  const applyTodoPriorityPlan = useCallback(async () => {
+    if (!user || saving) return;
+    const updates = visible.todos.filter(todo => todo.userId === user.uid && todo.status !== 'done' && todoPriorityPlan[todo.id]?.suggestedPriority && todoPriorityPlan[todo.id]?.suggestedPriority !== todo.priority);
+    if (!updates.length) {
+      setOperationMessage('反映できる優先度変更はありません');
+      window.setTimeout(() => setOperationMessage(''), 1800);
+      return;
+    }
+    setSaving(true);
+    setOperationError('');
+    setOperationMessage('AI整理結果をToDoに反映しています...');
+    try {
+      for (const todo of updates) {
+        const nextPriority = todoPriorityPlan[todo.id].suggestedPriority!;
+        const updated = { ...todo, priority: nextPriority, updatedAt: new Date().toISOString() } as Todo;
+        await updateDoc(doc(db, 'todos', todo.id), { priority: nextPriority, updatedAt: updated.updatedAt });
+        await syncSearchIndex('todo', todo.id, updated);
+      }
+      setOperationMessage(`${updates.length}件の優先度を更新しました`);
+      window.setTimeout(() => setOperationMessage(''), 1800);
+    } catch (e) {
+      setOperationError(e instanceof Error ? e.message : '優先度の反映に失敗しました');
+      setOperationMessage('');
+    } finally {
+      setSaving(false);
+    }
+  }, [saving, syncSearchIndex, todoPriorityPlan, user, visible.todos]);
 
   if (loading) return <div className="shell"><main className="content"><div className="card">読み込み中...</div></main></div>;
   if (!user) return <Login name={name} setName={setName} email={email} setEmail={setEmail} password={password} setPassword={setPassword} login={login} saving={saving} />;
@@ -652,10 +702,10 @@ export default function Page() {
       {operationError && <div className="error-card"><div><b>操作に失敗しました</b><p>{operationError}</p></div><button className="btn secondary" onClick={() => setOperationError('')}>閉じる</button></div>}
       {operationMessage && <div className="sync-status">{operationMessage}</div>}
       {dataLoading && !loadError && <div className="sync-status">データを更新しています...</div>}
-      {tab === 'home' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} chooseDate={chooseDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} onEdit={openEdit} onDelete={remove} currentUserId={user.uid} naturalAdd={naturalAdd} setTab={setTab} saving={saving} spaces={spaces} groupId={groupId} viewAllSpaces={viewAllSpaces} activeSpaceIds={activeSpaceIds} switchSpace={switchSpace} switchAllSpaces={switchAllSpaces} />}
+      {tab === 'home' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} chooseDate={chooseDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} onEdit={openEdit} onDelete={remove} currentUserId={user.uid} naturalAdd={naturalAdd} setTab={setTab} saving={saving} spaces={spaces} groupId={groupId} viewAllSpaces={viewAllSpaces} activeSpaceIds={activeSpaceIds} switchSpace={switchSpace} switchAllSpaces={switchAllSpaces} recommendedTodos={recommendedTodos} />}
       {tab === 'diary' && <DiaryView diaries={diaries} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} />}
-      {tab === 'calendar' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} chooseDate={chooseDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} onEdit={openEdit} onDelete={remove} currentUserId={user.uid} naturalAdd={naturalAdd} setTab={setTab} saving={saving} spaces={spaces} groupId={groupId} viewAllSpaces={viewAllSpaces} activeSpaceIds={activeSpaceIds} switchSpace={switchSpace} switchAllSpaces={switchAllSpaces} />}
-      {tab === 'todo' && <TodoView todos={todos} currentUserId={user.uid} toggleTodo={toggleTodo} onEdit={openEdit} onDelete={remove} prioritizeTodos={prioritizeTodos} todoPriorityPlan={todoPriorityPlan} todoSortMode={todoSortMode} setTodoSortMode={setTodoSortMode} saving={saving} />}
+      {tab === 'calendar' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} chooseDate={chooseDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} onEdit={openEdit} onDelete={remove} currentUserId={user.uid} naturalAdd={naturalAdd} setTab={setTab} saving={saving} spaces={spaces} groupId={groupId} viewAllSpaces={viewAllSpaces} activeSpaceIds={activeSpaceIds} switchSpace={switchSpace} switchAllSpaces={switchAllSpaces} recommendedTodos={recommendedTodos} />}
+      {tab === 'todo' && <TodoView todos={todos} currentUserId={user.uid} toggleTodo={toggleTodo} onEdit={openEdit} onDelete={remove} prioritizeTodos={prioritizeTodos} applyTodoPriorityPlan={applyTodoPriorityPlan} todoPriorityPlan={todoPriorityPlan} todoSortMode={todoSortMode} setTodoSortMode={setTodoSortMode} saving={saving} />}
       {tab === 'expense' && <ExpenseView expenses={expenses} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} setAddMode={setAddMode} />}
       {tab === 'ai' && <AIView chat={chat} chatSessions={chatSessions} activeChatSessionId={activeChatSessionId} setActiveChatSessionId={setActiveChatSessionId} startChatSession={startChatSession} resetActiveChatSession={resetActiveChatSession} openRelated={openRelated} question={question} setQuestion={setQuestion} ask={askAI} saving={saving} activeScopeName={viewAllSpaces ? `すべてのスペース（${activeSpaceIds.length || 1}件）` : activeSpaceName || personalSpaceName} />}
       {tab === 'notes' && <NotesView notes={sharedNotes} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} setAddMode={setAddMode} />}
@@ -701,8 +751,9 @@ export default function Page() {
     }
   }
   async function toggleTodo(todo: Todo) {
-    const updated = { ...todo, status: todo.status === 'done' ? 'open' : 'done', updatedAt: new Date().toISOString() } as Todo;
-    await updateDoc(doc(db, 'todos', todo.id), { status: updated.status, updatedAt: updated.updatedAt });
+    const done = todo.status !== 'done';
+    const updated = { ...todo, status: done ? 'done' : 'open', completedAt: done ? new Date().toISOString() : '', updatedAt: new Date().toISOString() } as Todo;
+    await updateDoc(doc(db, 'todos', todo.id), { status: updated.status, completedAt: updated.completedAt, updatedAt: updated.updatedAt });
     await syncSearchIndex('todo', todo.id, updated);
   }
   async function saveGroupId(v: string) {
@@ -1260,7 +1311,7 @@ function Login(p: { name: string; setName: (v: string) => void; email: string; s
   return <div className="shell"><main className="content" style={{ paddingTop: 64 }}><div className="card"><h1>AI Life Diary v5</h1><p className="muted">Firebaseログインで開始します。日記・予定・ToDo・支出をAIで横断検索できます。</p><input className="input" placeholder="名前（新規登録時）" value={p.name} onChange={e => p.setName(e.target.value)} /><input className="input" placeholder="メール" value={p.email} onChange={e => p.setEmail(e.target.value)} /><input className="input" type="password" placeholder="パスワード" value={p.password} onChange={e => p.setPassword(e.target.value)} /><div className="grid"><button className="btn" disabled={p.saving} onClick={() => p.login(false)}>ログイン</button><button className="btn secondary" disabled={p.saving} onClick={() => p.login(true)}>新規登録</button></div></div></main></div>;
 }
 
-function CalendarHomeView({ selectedDate, setSelectedDate, chooseDate, calendarMonth, setCalendarMonth, diaries, events, todos, expenses, anniversaries, monthExpense, openAdd, onEdit, onDelete, currentUserId, naturalAdd, setTab, saving, spaces, groupId, viewAllSpaces, activeSpaceIds, switchSpace, switchAllSpaces }: any) {
+function CalendarHomeView({ selectedDate, setSelectedDate, chooseDate, calendarMonth, setCalendarMonth, diaries, events, todos, expenses, anniversaries, monthExpense, openAdd, onEdit, onDelete, currentUserId, naturalAdd, setTab, saving, spaces, groupId, viewAllSpaces, activeSpaceIds, switchSpace, switchAllSpaces, recommendedTodos }: any) {
   const [naturalText, setNaturalText] = useState('');
   const [year, month] = calendarMonth.slice(0, 7).split('-').map(Number);
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
@@ -1298,6 +1349,11 @@ function CalendarHomeView({ selectedDate, setSelectedDate, chooseDate, calendarM
     <button className="summary-tile" onClick={() => setTab('expense')}><span>今月支出</span><b>{yen(monthExpense)}</b></button>
   </section>
     <SpaceChatSwitcher spaces={spaces} groupId={groupId} viewAllSpaces={viewAllSpaces} activeSpaceIds={activeSpaceIds} switchSpace={switchSpace} switchAllSpaces={switchAllSpaces} saving={saving} />
+    <section className="card today-todo-card" onClick={() => setTab('todo')}>
+      <div className="row"><div><p className="eyebrow">今日やるToDo</p><h3>{recommendedTodos?.filter((item: any) => item.bucket === 'today').length || 0}件を優先</h3></div><Sparkles size={20} /></div>
+      {(recommendedTodos || []).slice(0, 3).map((item: any) => <div className="today-todo-row" key={item.id}><span>#{item.rank}</span><div><b>{item.todo.title}</b><small>{item.reason}</small></div></div>)}
+      {!recommendedTodos?.length && <p className="muted">未完了ToDoはありません。</p>}
+    </section>
     <section className="card natural-card"><h3>自然文で追加</h3><div className="compose"><input className="input" placeholder="例: 明日19時に歯医者、1時間前に通知 / 今週中に課題提出、前日9時に教えて" value={naturalText} disabled={saving} onChange={e => setNaturalText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') submitNatural(); }} /><button className="btn" disabled={!naturalText.trim() || saving} onClick={submitNatural}>{saving ? '処理中...' : '追加'}</button></div></section>
     <section className="calendar-hero"><div><p>カレンダー</p><h2>{monthLabel(calendarMonth)}</h2></div><button className="btn secondary" onClick={() => { const today = todayIso(); setSelectedDate(today); setCalendarMonth(today); }}>今日</button></section>
     <section className="calendar-card">
@@ -1360,7 +1416,7 @@ function HomeView({ setAddMode, todayEvents, openTodos, monthExpense, setTab, me
 }
 function DiaryView({ diaries, currentUserId, onEdit, onDelete }: any) { return <Section title="日記">{diaries.map((d: Diary) => <article className="card" key={d.id}><div className="row"><b>{d.title}</b><span>{d.visibility}</span></div><p className="muted">{d.date} / {d.ownerName}</p><p>{d.content}</p>{d.photos?.map(url => <img key={url} className="photo" src={url} alt="diary" />)}{d.userId === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('diary', d)}>編集</button><button className="link" onClick={() => onDelete('diary', d.id)}>削除</button></div>}</article>)}</Section>; }
 function CalendarView({ events, anniversaries, currentUserId, onDelete, setAddMode }: any) { return <Section title="予定・記念日"><div className="grid"><button className="btn" onClick={() => setAddMode('event')}>予定追加</button><button className="btn secondary" onClick={() => setAddMode('anniversary')}>記念日追加</button></div>{events.map((e: EventItem) => <article className="card" key={e.id}><div className="row"><b>{e.title}</b><span>{e.ownerName}</span></div><p className="muted">{new Date(e.startAt).toLocaleString('ja-JP')} {e.location}</p><p>{e.description}</p>{e.remindAt && <p className="muted">リマインド: {new Date(e.remindAt).toLocaleString('ja-JP')}</p>}{e.userId === currentUserId && <button className="link" onClick={() => onDelete('event', e.id)}>削除</button>}</article>)}{anniversaries.map((a: Anniversary) => <article className="card accent" key={a.id}><b>🎁 {a.title}</b><p className="muted">{a.date} / {a.repeat === 'yearly' ? '毎年' : '一回'}</p>{a.userId === currentUserId && <button className="link" onClick={() => onDelete('anniversary', a.id)}>削除</button>}</article>)}</Section>; }
-function TodoView({ todos, currentUserId, toggleTodo, onEdit, onDelete, prioritizeTodos, todoPriorityPlan, todoSortMode, setTodoSortMode, saving }: { todos: Todo[]; currentUserId: string; toggleTodo: (todo: Todo) => void | Promise<void>; onEdit: (mode: Exclude<AddMode, null>, item: Record<string, any>) => void; onDelete: (type: string, id: string) => void; prioritizeTodos: () => void | Promise<void>; todoPriorityPlan: TodoPriorityPlan; todoSortMode: 'default' | 'ai'; setTodoSortMode: (mode: 'default' | 'ai') => void; saving: boolean }) {
+function TodoView({ todos, currentUserId, toggleTodo, onEdit, onDelete, prioritizeTodos, applyTodoPriorityPlan, todoPriorityPlan, todoSortMode, setTodoSortMode, saving }: { todos: Todo[]; currentUserId: string; toggleTodo: (todo: Todo) => void | Promise<void>; onEdit: (mode: Exclude<AddMode, null>, item: Record<string, any>) => void; onDelete: (type: string, id: string) => void; prioritizeTodos: () => void | Promise<void>; applyTodoPriorityPlan: () => void | Promise<void>; todoPriorityPlan: TodoPriorityPlan; todoSortMode: 'default' | 'ai'; setTodoSortMode: (mode: 'default' | 'ai') => void; saving: boolean }) {
   const sortedTodos = useMemo(() => {
     if (todoSortMode !== 'ai') return todos;
     return [...todos].sort((a, b) => {
@@ -1372,6 +1428,8 @@ function TodoView({ todos, currentUserId, toggleTodo, onEdit, onDelete, prioriti
     });
   }, [todoPriorityPlan, todoSortMode, todos]);
   const openCount = todos.filter(todo => todo.status !== 'done').length;
+  const hasAiPlan = Object.keys(todoPriorityPlan).length > 0;
+  const bucketLabel: Record<string, string> = { today: '今日やる', week: '今週', later: '後で', done: '完了' };
   return <Section title="ToDo">
     <div className="todo-tools">
       <div>
@@ -1380,6 +1438,7 @@ function TodoView({ todos, currentUserId, toggleTodo, onEdit, onDelete, prioriti
       </div>
       <div className="todo-tool-actions">
         {todoSortMode === 'ai' && <button className="btn secondary" disabled={saving} onClick={() => setTodoSortMode('default')}>通常順</button>}
+        {hasAiPlan && <button className="btn secondary" disabled={saving} onClick={applyTodoPriorityPlan}>優先度に反映</button>}
         <button className="btn primary" disabled={saving || openCount === 0} onClick={prioritizeTodos}><Sparkles size={17} />AI整理</button>
       </div>
     </div>
@@ -1393,6 +1452,12 @@ function TodoView({ todos, currentUserId, toggleTodo, onEdit, onDelete, prioriti
         <p className="muted">期限: {t.dueAt || '-'} / {t.ownerName}</p>
         {t.remindAt && <p className="muted">リマインド: {new Date(t.remindAt).toLocaleString('ja-JP')}</p>}
         {plan && todoSortMode === 'ai' && <div className="todo-ai-reason"><span className="todo-rank">#{plan.rank}</span><p>{plan.reason}</p></div>}
+        {plan && todoSortMode === 'ai' && <div className="todo-ai-chips">
+          {plan.bucket && <span>{bucketLabel[plan.bucket] || plan.bucket}</span>}
+          {plan.suggestedPriority && plan.suggestedPriority !== t.priority && <span>推奨: 優先度{priorityLabel[plan.suggestedPriority]}</span>}
+          {(plan.chips || []).map(chip => <span key={chip}>{chip}</span>)}
+        </div>}
+        {plan?.subtasks?.length && todoSortMode === 'ai' ? <div className="todo-subtasks"><b>分解</b>{plan.subtasks.map(task => <small key={task}>・{task}</small>)}</div> : null}
         <p>{t.description}</p>
         {t.userId === currentUserId && <div className="row-actions"><button className="link edit-link" disabled={saving} onClick={() => onEdit('todo', t)}>編集</button><button className="link" disabled={saving} onClick={() => onDelete('todo', t.id)}>削除</button></div>}
       </article>;

@@ -57,7 +57,10 @@ export const todoPrioritizeSchema = z.object({
     status: z.enum(['open', 'done']).optional(),
     ownerName: z.string().max(120).optional(),
     remindAt: z.string().max(80).optional(),
-    reminderEnabled: z.boolean().optional()
+    reminderEnabled: z.boolean().optional(),
+    createdAt: z.string().max(80).optional(),
+    updatedAt: z.string().max(80).optional(),
+    completedAt: z.string().max(80).optional()
   })).max(200),
   events: z.array(z.object({
     id: z.string().optional(),

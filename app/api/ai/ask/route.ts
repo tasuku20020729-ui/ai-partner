@@ -392,6 +392,30 @@ function todoHints(q: string) {
 function todoScore(q: string, todo: any) {
   return detailScore(q, 'todo', todo);
 }
+const todoUrgentWords = /急ぎ|至急|重要|今日|明日|締切|期限|提出|支払|支払い|予約|確認|連絡|申請|更新|準備|買う|購入|忘れ/;
+function todoPriorityScore(todo: any, base = iso(today())) {
+  const due = todo.dueAt ? new Date(`${String(todo.dueAt).slice(0, 10)}T00:00:00+09:00`) : null;
+  const baseDate = new Date(`${base}T00:00:00+09:00`);
+  const diff = due && !Number.isNaN(due.getTime()) ? Math.round((due.getTime() - baseDate.getTime()) / DAY) : null;
+  const dueScore = diff === null ? 4 : diff < 0 ? 72 : diff === 0 ? 64 : diff === 1 ? 52 : diff <= 3 ? 36 : diff <= 7 ? 22 : diff <= 14 ? 12 : 6;
+  const priorityScore = { high: 38, middle: 20, low: 8 } as Record<string, number>;
+  const text = `${todo.title || ''} ${todo.description || ''}`;
+  const wordScore = /今日|本日|至急|すぐ/.test(text) ? 38 : todoUrgentWords.test(text) ? 16 : 0;
+  const score = dueScore + (priorityScore[todo.priority] || 20) + wordScore + (todo.reminderEnabled && todo.remindAt ? 8 : 0);
+  const bucket = /今日|本日|至急|すぐ/.test(text) ? '今日やる' : diff !== null && diff <= 1 ? '今日やる' : score >= 78 ? '今日やる' : diff !== null && diff <= 7 ? '今週' : score >= 52 ? '今週' : '後で';
+  const reason = diff === null ? '期限未設定' : diff < 0 ? `期限を${Math.abs(diff)}日超過` : diff === 0 ? '今日が期限' : diff === 1 ? '明日が期限' : `${diff}日後が期限`;
+  const suggestedPriority = score >= 76 ? '高' : score >= 42 ? '中' : '低';
+  return { todo, score, bucket, reason, suggestedPriority };
+}
+function rankedTodosForAction(todos: any[]) {
+  return todos
+    .filter((todo:any) => todo.status !== 'done')
+    .map((todo:any) => todoPriorityScore(todo))
+    .sort((a:any, b:any) => b.score - a.score || String(a.todo.dueAt || '9999-12-31').localeCompare(String(b.todo.dueAt || '9999-12-31')));
+}
+function wantsTodoPrioritization(q: string) {
+  return /優先順位|優先度|整理|並び替え|今日やる|今やる|やるべき|先に|順番/.test(q) && !/予定|支出|日記|記念日|メモ/.test(q);
+}
 function formatTodoDetail(todo: any) {
   const fields = [
     `タイトル: ${todo.title || 'ToDo'}`,
@@ -463,7 +487,7 @@ function classifyQuestion(q: string): QuestionIntent {
   if (/記念日|誕生日|付き合った日|結婚記念/.test(text)) return 'anniversary';
   if (/メモ|共有メモ|ノート/.test(text)) return 'memo';
   if (/いくら|合計|平均|支出|使った|費用|出費|食費|デート代|交通費|日用品|医療費|娯楽費|旅行代|お金|金額|内訳|カテゴリ/.test(text)) return 'expense';
-  if (/ToDo|todo|タスク|課題|やること|未完了|完了済み|完了した|期限|提出/.test(text)) return 'todo';
+  if (/ToDo|todo|タスク|課題|やること|未完了|完了済み|完了した|期限|提出|今日やる|今やる|やるべき|優先順位/.test(text)) return 'todo';
   if (/予定|スケジュール|空き|何がある|集合|会議|予約|イベント|リマインド/.test(text)) return 'event';
   if (/日記|思い出|覚えてる|何した|どこ行った|楽しかった|嬉しかった|悲しかった|気分|振り返り/.test(text)) return 'diary';
   return 'unknown';
@@ -502,6 +526,13 @@ function deterministicAnswer(body: Body) {
   if (effectiveIntent === 'todo') {
     const wantsDone = /完了済み|完了した/.test(q);
     const wantsOpen = /未完了|残って|残り|まだ|これから/.test(q);
+    if (!wantsDone && wantsTodoPrioritization(q)) {
+      const ranked = rankedTodosForAction(s.todos).slice(0, 10);
+      if (!ranked.length) return `${rangeLabel}未完了ToDoはありません。`;
+      const todayItems = ranked.filter((item:any) => item.bucket === '今日やる').length;
+      const lines = ranked.map((item:any, index:number) => `#${index + 1} ${item.todo.title}${item.todo.dueAt ? `（期限:${item.todo.dueAt}）` : ''} / ${item.bucket} / 推奨優先度:${item.suggestedPriority}\n  理由: ${item.reason}${item.todo.description ? `\n  内容: ${item.todo.description}` : ''}`).join('\n');
+      return `${rangeLabel}ToDoを優先順位で整理しました。今日やる候補は${todayItems}件です。\n${lines}`;
+    }
     const detail = todoDetailRequested(q) || matchedDetailIntent === 'todo';
     const todoPool = s.todos.filter((t:any) => {
       if (wantsDone) return t.status === 'done';

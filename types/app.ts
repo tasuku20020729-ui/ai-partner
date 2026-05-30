@@ -88,6 +88,7 @@ export type Todo = BaseDoc & {
   status: TodoStatus;
   remindAt?: string;
   reminderEnabled?: boolean;
+  completedAt?: string;
 };
 
 export type Expense = BaseDoc & {
