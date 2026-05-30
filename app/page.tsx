@@ -144,7 +144,7 @@ function localTodoRank(todos: Todo[], today = todayIso()): Array<TodoPriorityPla
     const score = dueScore(diff) + (priorityScore[todo.priority] || 20) + wordScore + (todo.reminderEnabled && todo.remindAt ? 8 : 0);
     const bucket = (/今日|本日|至急|すぐ/.test(text) ? 'today' : diff !== null && diff <= 1 ? 'today' : score >= 78 ? 'today' : diff !== null && diff <= 7 ? 'week' : score >= 52 ? 'week' : 'later') as TodoPriorityPlan[string]['bucket'];
     const suggestedPriority = (score >= 76 ? 'high' : score >= 42 ? 'middle' : 'low') as Todo['priority'];
-    const chips = [diff !== null && diff < 0 ? '期限超過' : '', diff === 0 ? '今日中' : '', diff === 1 ? '明日まで' : '', diff === null ? '期限なし' : '', todo.priority === 'high' ? '重要' : ''].filter(Boolean);
+    const chips = [diff !== null && diff < 0 ? '期限超過' : '', diff === 0 ? '今日中' : '', diff === 1 ? '明日まで' : '', diff === null ? '期限なし' : '', todo.priority === 'high' ? '重要' : ''].filter((item): item is string => Boolean(item));
     const reason = diff === null ? '期限未設定 / 内容と優先度から判定' : diff < 0 ? `期限を${Math.abs(diff)}日超過` : diff === 0 ? '今日が期限' : `${diff}日後が期限`;
     return { id: todo.id, todo, rank: 0, score, reason, suggestedPriority, bucket, chips };
   }).sort((a, b) => b.score - a.score).map((item, index) => ({ ...item, rank: index + 1 }));
@@ -677,7 +677,9 @@ export default function Page() {
     setOperationMessage('AI整理結果をToDoに反映しています...');
     try {
       for (const todo of updates) {
-        const nextPriority = todoPriorityPlan[todo.id].suggestedPriority!;
+        const plan = todoPriorityPlan[todo.id];
+        if (!plan?.suggestedPriority) continue;
+        const nextPriority = plan.suggestedPriority;
         const updated = { ...todo, priority: nextPriority, updatedAt: new Date().toISOString() } as Todo;
         await updateDoc(doc(db, 'todos', todo.id), { priority: nextPriority, updatedAt: updated.updatedAt });
         await syncSearchIndex('todo', todo.id, updated);

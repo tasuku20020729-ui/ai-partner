@@ -65,12 +65,12 @@ function bucketFrom(diff: number | null, score: number, status?: string): TodoBu
   if (score >= 52) return 'week';
   return 'later';
 }
-function suggestedPriorityFrom(score: number) {
+function suggestedPriorityFrom(score: number): RankedTodo['suggestedPriority'] {
   if (score >= 76) return 'high';
   if (score >= 42) return 'middle';
   return 'low';
 }
-function chipsFor(todo: TodoInput, diff: number | null, wordScore: number, eventLink: number) {
+function chipsFor(todo: TodoInput, diff: number | null, wordScore: number, eventLink: number): string[] {
   return [
     diff !== null && diff < 0 ? '期限超過' : '',
     diff === 0 ? '今日中' : '',
@@ -80,7 +80,7 @@ function chipsFor(todo: TodoInput, diff: number | null, wordScore: number, event
     wordScore ? '要注意' : '',
     eventLink ? '予定関連' : '',
     todo.reminderEnabled && todo.remindAt ? '通知あり' : ''
-  ].filter(Boolean).slice(0, 4);
+  ].filter((item): item is string => Boolean(item)).slice(0, 4);
 }
 function splitSubtasks(todo: TodoInput) {
   const text = `${todo.title || ''} ${todo.description || ''}`;
@@ -117,13 +117,15 @@ function fallbackRank(todos: TodoInput[], events: EventInput[] = [], today = tod
         wordScore ? '重要語句あり' : '',
         eventLink ? '関連予定あり' : '',
         staleScore ? '長く残っている' : ''
-      ].filter(Boolean);
+      ].filter((item): item is string => Boolean(item));
+      const suggestedPriority: RankedTodo['suggestedPriority'] = suggestedPriorityFrom(score);
+      const bucket: TodoBucket = /今日|本日|至急|すぐ/.test(text) && todo.status !== 'done' ? 'today' : bucketFrom(diff, score, todo.status);
       return {
         id: todo.id,
         score,
         reason: reasonParts.join(' / '),
-        suggestedPriority: suggestedPriorityFrom(score),
-        bucket: /今日|本日|至急|すぐ/.test(text) && todo.status !== 'done' ? 'today' : bucketFrom(diff, score, todo.status),
+        suggestedPriority,
+        bucket,
         chips: chipsFor(todo, diff, wordScore, eventLink),
         subtasks: splitSubtasks(todo)
       };
