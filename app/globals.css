@@ -1104,6 +1104,59 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   padding: 6px 2px 104px;
   scroll-behavior: smooth;
 }
+.message-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.message-row.user {
+  align-items: flex-end;
+}
+.message-row.ai {
+  align-items: flex-start;
+}
+.ai-empty {
+  align-self: stretch;
+  display: grid;
+  gap: 14px;
+  padding: 28px 8px 18px;
+  text-align: center;
+}
+.ai-empty h3 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: 0;
+}
+.ai-empty .eyebrow {
+  margin: 0;
+}
+.ai-empty-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 2px;
+}
+.ai-empty-grid button {
+  min-height: 92px;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--ink);
+  padding: 13px;
+  text-align: left;
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.05);
+}
+.ai-empty-grid b {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 14px;
+}
+.ai-empty-grid span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
 .bubble {
   max-width: min(86%, 390px);
   border-radius: 20px;
@@ -1128,6 +1181,62 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .bubble.ai:empty::after {
   content: '...';
   color: var(--muted);
+}
+.bubble-actions {
+  display: flex;
+  gap: 6px;
+  padding-left: 6px;
+}
+.related-links {
+  display: grid;
+  gap: 7px;
+  width: min(88%, 390px);
+  padding-left: 6px;
+}
+.related-links > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+}
+.related-links button {
+  display: grid;
+  gap: 2px;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--ink);
+  padding: 9px 11px;
+  text-align: left;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+}
+.related-links b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.related-links small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+.bubble-actions button {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--muted);
+  padding: 6px 9px;
+  font-size: 12px;
+  font-weight: 850;
+}
+.bubble-actions button:active {
+  transform: translateY(1px);
 }
 .compose { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
 .chat-compose { margin-top: 12px; }

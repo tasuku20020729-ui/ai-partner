@@ -9,11 +9,12 @@ import { Bell, CalendarDays, CheckSquare, ChevronLeft, ChevronRight, Gift, Home,
 import { todayIso, toDateTimeLocalValue } from '@/lib/date';
 import { enablePwaPush } from '@/lib/push';
 import { personalSpaceId, personalSpaceName, scopeFieldsForSpace, sharedSpaceId } from '@/lib/spaces';
-import type { Anniversary, Currency, Diary, EventItem, Expense, ExpenseCategory, SharedNote, Space, SpaceMember, SpaceType, Todo, Visibility } from '@/types/app';
+import type { Anniversary, Currency, Diary, EventItem, Expense, ExpenseCategory, Recurrence, SharedNote, Space, SpaceMember, SpaceType, Todo, Visibility } from '@/types/app';
 
 type Tab = 'home' | 'diary' | 'calendar' | 'todo' | 'expense' | 'ai' | 'notes' | 'settings';
 type AddMode = 'diary' | 'event' | 'todo' | 'expense' | 'anniversary' | 'note' | null;
-type ChatMessage = { role: 'user' | 'ai'; content: string };
+type RelatedLink = { id: string; type: Exclude<AddMode, null>; title: string; subtitle: string; date?: string; tab?: Tab };
+type ChatMessage = { role: 'user' | 'ai'; content: string; related?: RelatedLink[] };
 type ChatSession = { id: string; title: string; messages: ChatMessage[]; createdAt: string; updatedAt: string };
 type EditTarget = { mode: Exclude<AddMode, null>; id: string; data: Record<string, any> } | null;
 type SpaceSummary = Pick<Space, 'id' | 'name' | 'type'>;
@@ -34,7 +35,7 @@ const normalizeChatSessions = (value: unknown): ChatSession[] => {
       ? session.messages
         .filter((m: any) => ['user', 'ai'].includes(m?.role) && typeof m?.content === 'string')
         .slice(-80)
-        .map((m: any) => ({ role: m.role as ChatMessage['role'], content: m.content }))
+        .map((m: any) => ({ role: m.role as ChatMessage['role'], content: m.content, related: Array.isArray(m.related) ? m.related.slice(0, 5) : undefined }))
       : [{ role: 'ai', content: initialAiMessage } as ChatMessage]),
     createdAt: String(session.createdAt || new Date().toISOString()),
     updatedAt: String(session.updatedAt || new Date().toISOString())
@@ -53,6 +54,14 @@ const categories: { value: ExpenseCategory; label: string }[] = [
 ];
 const categoryLabel = Object.fromEntries(categories.map(c => [c.value, c.label]));
 const priorityLabel = { high: '高', middle: '中', low: '低' };
+const recurrenceOptions: { value: Recurrence; label: string }[] = [
+  { value: 'none', label: '繰り返しなし' },
+  { value: 'daily', label: '毎日' },
+  { value: 'weekly', label: '毎週' },
+  { value: 'monthly', label: '毎月' },
+  { value: 'yearly', label: '毎年' }
+];
+const recurrenceLabel = Object.fromEntries(recurrenceOptions.map(item => [item.value, item.label]));
 const ratesToJpy: Record<Currency, number> = { JPY: 1, MYR: 33, USD: 155 }; // 自動取得は設計から除外。設定値として固定。
 const newGroupId = personalSpaceId;
 const yen = (n: number) => `${Math.round(n).toLocaleString()}円`;
@@ -78,6 +87,68 @@ const addMonths = (isoDate: string, months: number) => {
 };
 const dateFromMonthDay = (monthIso: string, day: number) => `${monthIso.slice(0, 7)}-${String(day).padStart(2, '0')}`;
 const dateTimeOnDate = (date: string, time = '09:00') => `${date}T${time}`;
+const daysBetween = (from: string, to: string) => Math.floor((new Date(`${to}T00:00:00+09:00`).getTime() - new Date(`${from}T00:00:00+09:00`).getTime()) / 86400000);
+const timePart = (value?: string) => {
+  if (!value) return '09:00';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value.slice(11, 16) || '09:00';
+  return new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+};
+function recursOnDate(startDate: string, targetDate: string, recurrence?: Recurrence, endDate?: string) {
+  if (!recurrence || recurrence === 'none') return startDate === targetDate;
+  if (!startDate || targetDate < startDate) return false;
+  if (endDate && targetDate > endDate.slice(0, 10)) return false;
+  const diff = daysBetween(startDate, targetDate);
+  if (recurrence === 'daily') return diff >= 0;
+  if (recurrence === 'weekly') return diff >= 0 && diff % 7 === 0;
+  if (recurrence === 'monthly') return targetDate.slice(8, 10) === startDate.slice(8, 10);
+  if (recurrence === 'yearly') return targetDate.slice(5) === startDate.slice(5);
+  return false;
+}
+function eventOnDate(event: EventItem, targetDate: string): EventItem | null {
+  const startDate = datePart(event.startAt);
+  if (!recursOnDate(startDate, targetDate, event.recurrence, event.recurrenceEndAt)) return null;
+  if (!event.recurrence || event.recurrence === 'none' || startDate === targetDate) return event;
+  const startTime = timePart(event.startAt);
+  const endTime = event.endAt ? timePart(event.endAt) : '';
+  return {
+    ...event,
+    startAt: new Date(`${targetDate}T${startTime}:00+09:00`).toISOString(),
+    endAt: endTime ? new Date(`${targetDate}T${endTime}:00+09:00`).toISOString() : event.endAt
+  };
+}
+function expenseOnDate(expense: Expense, targetDate: string): Expense | null {
+  if (!recursOnDate(expense.date, targetDate, expense.recurrence, expense.recurrenceEndAt)) return null;
+  return expense.date === targetDate ? expense : { ...expense, date: targetDate };
+}
+function recurringExpensesInMonth(expenses: Expense[], monthIso: string) {
+  const [year, month] = monthIso.slice(0, 7).split('-').map(Number);
+  const days = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return Array.from({ length: days }, (_, i) => dateFromMonthDay(monthIso, i + 1)).flatMap(date => expenses.map(expense => expenseOnDate(expense, date)).filter(Boolean) as Expense[]);
+}
+const compactSearchText = (value: unknown) => String(value || '').toLowerCase().replace(/\s+/g, '');
+const relatedHints = (question: string, answer: string) => Array.from(new Set(`${question}\n${answer}`
+  .replace(/今日|明日|昨日|今週|来週|先週|今月|来月|先月|予定|ToDo|todo|支出|日記|記念日|メモ|詳しく|詳細|教えて|あります|です|ます|した|する|について|参照|関連|登録者|日付|内容|金額|場所/g, ' ')
+  .split(/[\s、。・/／,，?？!！:：（）()]+/)
+  .map(compactSearchText)
+  .filter(word => word.length >= 2))).slice(0, 16);
+function buildRelatedLinks(question: string, answer: string, data: any): RelatedLink[] {
+  const hints = relatedHints(question, answer);
+  if (!hints.length) return [];
+  const score = (text: string) => {
+    const haystack = compactSearchText(text);
+    return hints.reduce((sum, hint) => sum + (haystack.includes(hint) ? Math.min(8, hint.length) : 0), 0);
+  };
+  const rows: Array<RelatedLink & { score: number }> = [
+    ...(data.events || []).map((item: EventItem) => ({ id: item.id, type: 'event' as const, title: item.title || '予定', subtitle: [datePart(item.startAt), item.location, item.ownerName].filter(Boolean).join(' / '), date: datePart(item.startAt), score: score([item.title, item.description, item.location, item.ownerName, item.spaceName, item.startAt].filter(Boolean).join(' ')) })),
+    ...(data.todos || []).map((item: Todo) => ({ id: item.id, type: 'todo' as const, title: item.title || 'ToDo', subtitle: [item.dueAt || '期限なし', item.status === 'done' ? '完了' : '未完了', item.ownerName].filter(Boolean).join(' / '), date: item.dueAt?.slice(0, 10), score: score([item.title, item.description, item.dueAt, item.ownerName, item.spaceName].filter(Boolean).join(' ')) })),
+    ...(data.expenses || []).map((item: Expense) => ({ id: item.id, type: 'expense' as const, title: item.title || item.shopName || '支出', subtitle: [item.date, categoryLabel[item.category], yen(Number(item.amountBase || 0))].filter(Boolean).join(' / '), date: item.date, score: score([item.title, item.shopName, item.memo, categoryLabel[item.category], item.date, item.ownerName, item.spaceName].filter(Boolean).join(' ')) })),
+    ...(data.diaries || []).map((item: Diary) => ({ id: item.id, type: 'diary' as const, title: item.title || '日記', subtitle: [item.date, item.mood, item.ownerName].filter(Boolean).join(' / '), date: item.date, score: score([item.title, item.content, item.mood, ...(item.tags || []), item.date, item.ownerName, item.spaceName].filter(Boolean).join(' ')) })),
+    ...(data.anniversaries || []).map((item: Anniversary) => ({ id: item.id, type: 'anniversary' as const, title: item.title || '記念日', subtitle: [item.date, item.repeat === 'yearly' ? '毎年' : '一回'].filter(Boolean).join(' / '), date: item.date, score: score([item.title, item.date, item.ownerName, item.spaceName].filter(Boolean).join(' ')) })),
+    ...(data.sharedNotes || []).map((item: SharedNote) => ({ id: item.id, type: 'note' as const, title: item.title || '共有メモ', subtitle: [item.createdByName, item.spaceName].filter(Boolean).join(' / '), tab: 'notes' as const, score: score([item.title, item.content, item.createdByName, item.spaceName].filter(Boolean).join(' ')) }))
+  ];
+  return rows.filter(item => item.score > 0).sort((a, b) => b.score - a.score).slice(0, 5).map(({ score: _score, ...item }) => item);
+}
 const inviteCode = () => `PAIR-${Math.random().toString(36).slice(2, 6).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 const csvToList = (value: string) => Array.from(new Set(value.split(/[,、]/).map(v => v.trim()).filter(Boolean)));
 const listToCsv = (value?: string[]) => (value || []).join(', ');
@@ -144,7 +215,11 @@ function toRagItem(type: AddMode | string, id: string, item: Record<string, any>
     item.repeat ? `繰り返し: ${item.repeat === 'yearly' ? '毎年' : '一回'}` : '',
     item.remindDaysBefore !== undefined ? `通知: ${item.remindDaysBefore}日前` : ''
   ].filter(Boolean).join('\n') : '';
-  const content = [item.content, item.description, diaryDetail, eventDetail, todoDetail, expenseDetail, anniversaryDetail, item.memo, type === 'event' ? item.location : '', item.shopName].filter(Boolean).join('\n');
+  const recurrenceDetail = (type === 'event' || type === 'expense') && item.recurrence && item.recurrence !== 'none' ? [
+    `定期: ${recurrenceLabel[item.recurrence as Recurrence] || item.recurrence}`,
+    item.recurrenceEndAt ? `定期終了: ${item.recurrenceEndAt}` : ''
+  ].filter(Boolean).join('\n') : '';
+  const content = [item.content, item.description, diaryDetail, eventDetail, todoDetail, expenseDetail, anniversaryDetail, recurrenceDetail, item.memo, type === 'event' ? item.location : '', item.shopName].filter(Boolean).join('\n');
   return {
     id,
     type: sourceType,
@@ -176,6 +251,8 @@ function toRagItem(type: AddMode | string, id: string, item: Record<string, any>
       dueAt: item.dueAt,
       location: item.location,
       shopName: item.shopName,
+      recurrence: item.recurrence,
+      recurrenceEndAt: item.recurrenceEndAt,
       repeat: item.repeat,
       remindDaysBefore: item.remindDaysBefore
     }
@@ -460,7 +537,7 @@ export default function Page() {
     return { diaries: diaries.filter(readable), events: events.filter(readable), todos: todos.filter(readable), expenses: expenses.filter(readable), anniversaries: anniversaries.filter(readable), sharedNotes };
   }, [diaries, events, todos, expenses, anniversaries, sharedNotes, user?.uid]);
 
-  const monthExpense = expenses.filter(e => e.date?.startsWith(todayIso().slice(0, 7))).reduce((s, e) => s + Number(e.amountBase || 0), 0);
+  const monthExpense = recurringExpensesInMonth(expenses, todayIso()).reduce((s, e) => s + Number(e.amountBase || 0), 0);
   const sharedStats = useMemo(() => {
     const sharedItems = [...diaries, ...events, ...todos, ...expenses, ...anniversaries].filter((item: any) => item.visibility === 'shared');
     const partnerItems = sharedItems.filter((item: any) => item.userId !== user?.uid);
@@ -471,7 +548,7 @@ export default function Page() {
     };
   }, [diaries, events, todos, expenses, anniversaries, sharedNotes, user?.uid]);
   const openTodos = todos.filter(t => t.status === 'open');
-  const todayEvents = events.filter(e => datePart(e.startAt) === todayIso());
+  const todayEvents = events.map(e => eventOnDate(e, todayIso())).filter(Boolean) as EventItem[];
   const memoryCards = buildMemoryCards(diaries, expenses, events, anniversaries);
   const reminderCards = buildReminderCards(todos, events, anniversaries);
   const openAddForDate = (mode: AddMode, date = selectedDate) => {
@@ -512,6 +589,15 @@ export default function Page() {
     updateActiveChatSession(session => ({ ...session, title: '新しい相談', messages: [{ role: 'ai', content: initialAiMessage }], updatedAt: new Date().toISOString() }));
     setQuestion('');
   }, [updateActiveChatSession]);
+  const openRelated = useCallback((item: RelatedLink) => {
+    if (item.date) {
+      setSelectedDate(item.date.slice(0, 10));
+      setCalendarMonth(item.date.slice(0, 10));
+      setTab('home');
+      return;
+    }
+    setTab(item.tab || 'home');
+  }, []);
 
   if (loading) return <div className="shell"><main className="content"><div className="card">読み込み中...</div></main></div>;
   if (!user) return <Login name={name} setName={setName} email={email} setEmail={setEmail} password={password} setPassword={setPassword} login={login} saving={saving} />;
@@ -528,7 +614,7 @@ export default function Page() {
       {tab === 'calendar' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} chooseDate={chooseDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} onEdit={openEdit} onDelete={remove} currentUserId={user.uid} naturalAdd={naturalAdd} setTab={setTab} saving={saving} spaces={spaces} groupId={groupId} viewAllSpaces={viewAllSpaces} activeSpaceIds={activeSpaceIds} switchSpace={switchSpace} switchAllSpaces={switchAllSpaces} />}
       {tab === 'todo' && <TodoView todos={todos} currentUserId={user.uid} toggleTodo={toggleTodo} onEdit={openEdit} onDelete={remove} />}
       {tab === 'expense' && <ExpenseView expenses={expenses} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} setAddMode={setAddMode} />}
-      {tab === 'ai' && <AIView chat={chat} chatSessions={chatSessions} activeChatSessionId={activeChatSessionId} setActiveChatSessionId={setActiveChatSessionId} startChatSession={startChatSession} resetActiveChatSession={resetActiveChatSession} question={question} setQuestion={setQuestion} ask={askAI} saving={saving} activeScopeName={viewAllSpaces ? `すべてのスペース（${activeSpaceIds.length || 1}件）` : activeSpaceName || personalSpaceName} />}
+      {tab === 'ai' && <AIView chat={chat} chatSessions={chatSessions} activeChatSessionId={activeChatSessionId} setActiveChatSessionId={setActiveChatSessionId} startChatSession={startChatSession} resetActiveChatSession={resetActiveChatSession} openRelated={openRelated} question={question} setQuestion={setQuestion} ask={askAI} saving={saving} activeScopeName={viewAllSpaces ? `すべてのスペース（${activeSpaceIds.length || 1}件）` : activeSpaceName || personalSpaceName} />}
       {tab === 'notes' && <NotesView notes={sharedNotes} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} setAddMode={setAddMode} />}
       {tab === 'settings' && <SettingsView user={user} groupId={groupId} shareEnabled={shareEnabled} activeSpaceName={activeSpaceName} spaces={spaces} spaceMembers={spaceMembers} setGroupId={saveGroupId} createSpace={createSpace} renameSpace={renameSpace} leaveSpace={leaveSpace} createInvite={createInviteForActiveSpace} revokeInvite={revokeInvite} joinInvite={joinInvite} partnerName={partnerName} partnerRelationship={partnerRelationship} savePartnerProfile={savePartnerProfile} saveMemberProfile={saveMemberProfile} reload={() => loadAll(user.uid, visibleSpaceIds.length ? visibleSpaceIds : groupId)} notificationEnabled={notificationEnabled} setNotificationEnabled={enableNotifications} pushStatus={pushStatus} enablePush={enablePushNotifications} repairSearchIndex={repairSearchIndex} saving={saving} sharedStats={sharedStats} />}
     </main>
@@ -1057,10 +1143,11 @@ export default function Page() {
         });
       }
       answer += decoder.decode();
+      const related = buildRelatedLinks(q, answer, visible);
       updateChatSession(sessionId, session => {
         const messages = [...session.messages];
         const lastIndex = messages.length - 1;
-        messages[lastIndex] = { role: 'ai', content: answer || '回答を生成できませんでした。' };
+        messages[lastIndex] = { role: 'ai', content: answer || '回答を生成できませんでした。', related };
         return { ...session, messages, updatedAt: new Date().toISOString() };
       });
     } catch {
@@ -1137,22 +1224,22 @@ function CalendarHomeView({ selectedDate, setSelectedDate, chooseDate, calendarM
   const blanks = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
   const cells = [...Array(blanks).fill(null), ...Array.from({ length: daysInMonth }, (_, i) => i + 1)];
   const selectedDiaries = diaries.filter((d: Diary) => d.date === selectedDate).sort((a: Diary, b: Diary) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-  const selectedEvents = events.filter((e: EventItem) => datePart(e.startAt) === selectedDate).sort((a: EventItem, b: EventItem) => String(a.startAt || '').localeCompare(String(b.startAt || '')));
+  const selectedEvents = (events.map((e: EventItem) => eventOnDate(e, selectedDate)).filter(Boolean) as EventItem[]).sort((a: EventItem, b: EventItem) => String(a.startAt || '').localeCompare(String(b.startAt || '')));
   const selectedTodos = todos.filter((t: Todo) => (t.dueAt || '').slice(0, 10) === selectedDate).sort((a: Todo, b: Todo) => {
     if (a.status !== b.status) return a.status === 'done' ? 1 : -1;
     const priority = { high: 0, middle: 1, low: 2 } as Record<string, number>;
     return (priority[a.priority] ?? 3) - (priority[b.priority] ?? 3);
   });
-  const selectedExpenses = expenses.filter((e: Expense) => e.date === selectedDate).sort((a: Expense, b: Expense) => Number(b.amountBase || 0) - Number(a.amountBase || 0));
+  const selectedExpenses = (expenses.map((e: Expense) => expenseOnDate(e, selectedDate)).filter(Boolean) as Expense[]).sort((a: Expense, b: Expense) => Number(b.amountBase || 0) - Number(a.amountBase || 0));
   const selectedAnniversaries = anniversaries.filter((a: Anniversary) => a.date?.slice(5) === selectedDate.slice(5)).sort((a: Anniversary, b: Anniversary) => String(a.title || '').localeCompare(String(b.title || '')));
   const selectedTotal = selectedExpenses.reduce((s: number, e: Expense) => s + Number(e.amountBase || 0), 0);
   const openTodoCount = selectedTodos.filter((t: Todo) => t.status !== 'done').length;
   const hasSelectedItems = Boolean(selectedEvents.length || selectedTodos.length || selectedDiaries.length || selectedExpenses.length || selectedAnniversaries.length);
   const hasOnDate = (date: string) => ({
     diary: diaries.some((d: Diary) => d.date === date),
-    event: events.some((e: EventItem) => datePart(e.startAt) === date),
+    event: events.some((e: EventItem) => Boolean(eventOnDate(e, date))),
     todo: todos.some((t: Todo) => (t.dueAt || '').slice(0, 10) === date && t.status !== 'done'),
-    expense: expenses.some((e: Expense) => e.date === date),
+    expense: expenses.some((e: Expense) => Boolean(expenseOnDate(e, date))),
     anniversary: anniversaries.some((a: Anniversary) => a.date?.slice(5) === date.slice(5))
   });
 
@@ -1168,7 +1255,7 @@ function CalendarHomeView({ selectedDate, setSelectedDate, chooseDate, calendarM
     <button className="summary-tile" onClick={() => setTab('expense')}><span>今月支出</span><b>{yen(monthExpense)}</b></button>
   </section>
     <SpaceChatSwitcher spaces={spaces} groupId={groupId} viewAllSpaces={viewAllSpaces} activeSpaceIds={activeSpaceIds} switchSpace={switchSpace} switchAllSpaces={switchAllSpaces} saving={saving} />
-    <section className="card natural-card"><h3>自然文で追加</h3><div className="compose"><input className="input" placeholder="例: 明日19時に歯医者 / 今週中に課題提出 / 昨日ランチで1200円" value={naturalText} disabled={saving} onChange={e => setNaturalText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') submitNatural(); }} /><button className="btn" disabled={!naturalText.trim() || saving} onClick={submitNatural}>{saving ? '処理中...' : '追加'}</button></div></section>
+    <section className="card natural-card"><h3>自然文で追加</h3><div className="compose"><input className="input" placeholder="例: 明日19時に歯医者、1時間前に通知 / 今週中に課題提出、前日9時に教えて" value={naturalText} disabled={saving} onChange={e => setNaturalText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') submitNatural(); }} /><button className="btn" disabled={!naturalText.trim() || saving} onClick={submitNatural}>{saving ? '処理中...' : '追加'}</button></div></section>
     <section className="calendar-hero"><div><p>カレンダー</p><h2>{monthLabel(calendarMonth)}</h2></div><button className="btn secondary" onClick={() => { const today = todayIso(); setSelectedDate(today); setCalendarMonth(today); }}>今日</button></section>
     <section className="calendar-card">
       <div className="calendar-head"><button className="icon-btn" onClick={() => setCalendarMonth(addMonths(calendarMonth, -1))} aria-label="前の月"><ChevronLeft size={18} /></button><b>{monthLabel(calendarMonth)}</b><button className="icon-btn" onClick={() => setCalendarMonth(addMonths(calendarMonth, 1))} aria-label="次の月"><ChevronRight size={18} /></button></div>
@@ -1233,9 +1320,33 @@ function CalendarView({ events, anniversaries, currentUserId, onDelete, setAddMo
 function TodoView({ todos, currentUserId, toggleTodo, onEdit, onDelete }: any) { return <Section title="ToDo">{todos.map((t: Todo) => <article className="card" key={t.id}><label className="row"><span><input type="checkbox" checked={t.status === 'done'} disabled={t.userId !== currentUserId} onChange={() => toggleTodo(t)} /> <b className={t.status === 'done' ? 'done' : ''}>{t.title}</b></span><span>{t.priority}</span></label><p className="muted">期限: {t.dueAt || '-'} / {t.ownerName}</p>{t.remindAt && <p className="muted">リマインド: {new Date(t.remindAt).toLocaleString('ja-JP')}</p>}<p>{t.description}</p>{t.userId === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('todo', t)}>編集</button><button className="link" onClick={() => onDelete('todo', t.id)}>削除</button></div>}</article>)}</Section>; }
 function ExpenseView({ expenses, currentUserId, onEdit, onDelete, setAddMode }: any) { const total = expenses.reduce((s: number, e: Expense) => s + Number(e.amountBase || 0), 0); return <Section title="支出"><button className="btn" onClick={() => setAddMode('expense')}>支出を追加</button><div className="card"><h3>合計</h3><div className="big">{yen(total)}</div></div>{expenses.map((e: Expense) => <article className="card" key={e.id}><div className="row"><b>{e.title}</b><span>{e.amount.toLocaleString()} {e.currency}</span></div><p className="muted">{e.date} / {categoryLabel[e.category]} / {e.ownerName}</p><p>{e.memo}</p>{e.receiptImageUrl && <img className="photo" src={e.receiptImageUrl} alt="receipt" />}{e.userId === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('expense', e)}>編集</button><button className="link" onClick={() => onDelete('expense', e.id)}>削除</button></div>}</article>)}</Section>; }
 function NotesView({ notes, currentUserId, onEdit, onDelete, setAddMode }: any) { return <Section title="共有メモ"><button className="btn" onClick={() => setAddMode('note')}>共有メモ追加</button>{notes.map((n: SharedNote) => <article className="card" key={n.id}><b>{n.title}</b><p className="muted">{n.createdByName}</p><p>{n.content}</p>{n.createdBy === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('note', n)}>編集</button><button className="link" onClick={() => onDelete('note', n.id)}>削除</button></div>}</article>)}</Section>; }
-function AIView({ chat, chatSessions, activeChatSessionId, setActiveChatSessionId, startChatSession, resetActiveChatSession, question, setQuestion, ask, saving, activeScopeName }: any) {
+function AIView({ chat, chatSessions, activeChatSessionId, setActiveChatSessionId, startChatSession, resetActiveChatSession, openRelated, question, setQuestion, ask, saving, activeScopeName }: any) {
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const suggestions = ['明日の予定は？', '未完了のToDoは？', '今月の支出を教えて', '次の記念日は？'];
-  return <section className="ai-screen"><div className="ai-header"><div className="space-avatar large"><MessageCircle size={24} /></div><div><p className="eyebrow">AIチャットbot</p><h2>生活データに質問</h2><p className="muted">予定、ToDo、日記、支出をまとめて確認できます。</p></div></div><div className="ai-scope"><span>参照中</span><b>{activeScopeName}</b></div><div className="chat-session-bar"><div className="chat-session-list">{chatSessions.map((session: ChatSession) => <button key={session.id} className={session.id === activeChatSessionId ? 'active' : ''} disabled={saving} onClick={() => setActiveChatSessionId(session.id)}>{session.title}</button>)}</div><div className="chat-session-actions"><button className="icon-btn" disabled={saving} title="新しいチャット" onClick={startChatSession}><Plus size={17} /></button><button className="icon-btn" disabled={saving} title="このチャットをリセット" onClick={resetActiveChatSession}><RotateCcw size={16} /></button></div></div><div className="suggestion-chips">{suggestions.map(text => <button key={text} disabled={saving} onClick={() => ask(text)}>{text}</button>)}</div><div className="chat ai-chat">{chat.map((m: ChatMessage, i: number) => <div key={i} className={`bubble ${m.role}`}>{m.content}</div>)}</div><div className="ai-compose"><textarea className="input" rows={1} placeholder="例: 明後日の予定は？" value={question} disabled={saving} onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !saving) { e.preventDefault(); ask(); } }} /><button className="btn" disabled={saving || !question.trim()} onClick={() => ask()}>{saving ? '...' : '送信'}</button></div></section>;
+  const emptyCards = [
+    { title: '今日の確認', text: '今日の予定と未完了ToDoを教えて' },
+    { title: '支出を見る', text: '今月の支出をカテゴリ別に教えて' },
+    { title: '思い出検索', text: '最近楽しかった日記を探して' },
+    { title: '共有を確認', text: '家族の明日の予定を教えて' }
+  ];
+  const isEmpty = chat.filter((m: ChatMessage) => m.role === 'user').length === 0 && !saving;
+  const copyAnswer = async (content: string, index: number) => {
+    await navigator.clipboard?.writeText(content);
+    setCopiedIndex(index);
+    window.setTimeout(() => setCopiedIndex(null), 1200);
+  };
+  const previousUserQuestion = (index: number) => [...chat.slice(0, index)].reverse().find((m: ChatMessage) => m.role === 'user')?.content || '';
+  return <section className="ai-screen">
+    <div className="ai-header"><div className="space-avatar large"><MessageCircle size={24} /></div><div><p className="eyebrow">AIチャットbot</p><h2>生活データに質問</h2><p className="muted">予定、ToDo、日記、支出をまとめて確認できます。</p></div></div>
+    <div className="ai-scope"><span>参照中</span><b>{activeScopeName}</b></div>
+    <div className="chat-session-bar"><div className="chat-session-list">{chatSessions.map((session: ChatSession) => <button key={session.id} className={session.id === activeChatSessionId ? 'active' : ''} disabled={saving} onClick={() => setActiveChatSessionId(session.id)}>{session.title}</button>)}</div><div className="chat-session-actions"><button className="icon-btn" disabled={saving} title="新しいチャット" onClick={startChatSession}><Plus size={17} /></button><button className="icon-btn" disabled={saving} title="このチャットをリセット" onClick={resetActiveChatSession}><RotateCcw size={16} /></button></div></div>
+    <div className="suggestion-chips">{suggestions.map(text => <button key={text} disabled={saving} onClick={() => ask(text)}>{text}</button>)}</div>
+    <div className="chat ai-chat">
+      {isEmpty && <div className="ai-empty"><p className="eyebrow">AI Life</p><h3>今日は何を確認しますか？</h3><div className="ai-empty-grid">{emptyCards.map(card => <button key={card.title} disabled={saving} onClick={() => ask(card.text)}><b>{card.title}</b><span>{card.text}</span></button>)}</div></div>}
+      {!isEmpty && chat.map((m: ChatMessage, i: number) => <div key={i} className={`message-row ${m.role}`}><div className={`bubble ${m.role}`}>{m.content}</div>{m.role === 'ai' && m.related?.length ? <div className="related-links"><span>関連データ</span>{m.related.map(item => <button key={`${item.type}_${item.id}`} disabled={saving} onClick={() => openRelated(item)}><b>{item.title}</b><small>{item.subtitle || '開く'}</small></button>)}</div> : null}{m.role === 'ai' && m.content && <div className="bubble-actions"><button disabled={saving} onClick={() => copyAnswer(m.content, i)}><Copy size={14} />{copiedIndex === i ? 'コピー済み' : 'コピー'}</button>{previousUserQuestion(i) && <button disabled={saving} onClick={() => ask(previousUserQuestion(i))}><RotateCcw size={14} />再生成</button>}</div>}</div>)}
+    </div>
+    <div className="ai-compose"><textarea className="input" rows={1} placeholder="例: 明後日の予定は？" value={question} disabled={saving} onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !saving) { e.preventDefault(); ask(); } }} /><button className="btn" disabled={saving || !question.trim()} onClick={() => ask()}>{saving ? '...' : '送信'}</button></div>
+  </section>;
 }
 
 function ShareBadge({ item, currentUserId }: { item: { userId?: string; visibility?: Visibility; ownerName?: string }; currentUserId: string }) {
@@ -1404,15 +1515,15 @@ function AddModal({ mode, setMode, close, save, user, spaces, activeSpaceId, act
   async function uploadImage(file: File, folder: string) { const path = `${folder}/${user.uid}/${Date.now()}_${file.name}`; const storageRef = ref(storage, path); await uploadBytes(storageRef, file); return getDownloadURL(storageRef); }
   return <div className="modal"><div className="panel">{!editTarget && !draftData && <div className="tabs"><button className={mode === 'diary' ? 'active' : ''} onClick={() => setMode('diary')}>日記</button><button className={mode === 'event' ? 'active' : ''} onClick={() => setMode('event')}>予定</button><button className={mode === 'todo' ? 'active' : ''} onClick={() => setMode('todo')}>ToDo</button><button className={mode === 'expense' ? 'active' : ''} onClick={() => setMode('expense')}>支出</button><button className={mode === 'anniversary' ? 'active' : ''} onClick={() => setMode('anniversary')}>記念日</button><button className={mode === 'note' ? 'active' : ''} onClick={() => setMode('note')}>メモ</button></div>}<h2 className="title">{editTarget ? '編集' : draftData ? 'AI解析結果を確認' : '追加'}</h2>{draftData && <p className="status-text">AIが作った候補です。日時・金額・種別を確認してから保存してください。</p>}
     {mode === 'diary' && <><input className="input" placeholder="タイトル" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.date} onChange={e => set('date', e.target.value)} /><textarea className="textarea" placeholder="内容" value={form.content || ''} onChange={e => set('content', e.target.value)} /><input className="input" placeholder="気分・タグ" value={form.mood || ''} onChange={e => set('mood', e.target.value)} /><label>写真</label><input className="input" type="file" accept="image/*" multiple onChange={async e => { const files = Array.from(e.target.files || []) as File[]; const urls: string[] = []; for (const file of files) urls.push(await uploadImage(file, 'diaries')); set('photos', urls); }} /></>}
-    {mode === 'event' && <><input className="input" placeholder="予定名" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="datetime-local" value={form.startAt || ''} onChange={e => set('startAt', e.target.value)} /><input className="input" type="datetime-local" value={form.endAt || ''} onChange={e => set('endAt', e.target.value)} /><input className="input" placeholder="場所" value={form.location || ''} onChange={e => set('location', e.target.value)} /><textarea className="textarea" placeholder="説明" value={form.description || ''} onChange={e => set('description', e.target.value)} /><label><input type="checkbox" checked={!!form.reminderEnabled} onChange={e => set('reminderEnabled', e.target.checked)} /> リマインド</label><input className="input" type="datetime-local" value={form.remindAt || ''} onChange={e => set('remindAt', e.target.value)} /></>}
+    {mode === 'event' && <><input className="input" placeholder="予定名" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="datetime-local" value={form.startAt || ''} onChange={e => set('startAt', e.target.value)} /><input className="input" type="datetime-local" value={form.endAt || ''} onChange={e => set('endAt', e.target.value)} /><select className="select" value={form.recurrence || 'none'} onChange={e => set('recurrence', e.target.value)}>{recurrenceOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>{form.recurrence && form.recurrence !== 'none' && <input className="input" type="date" value={form.recurrenceEndAt || ''} onChange={e => set('recurrenceEndAt', e.target.value)} placeholder="繰り返し終了日" />}<input className="input" placeholder="場所" value={form.location || ''} onChange={e => set('location', e.target.value)} /><textarea className="textarea" placeholder="説明" value={form.description || ''} onChange={e => set('description', e.target.value)} /><label><input type="checkbox" checked={!!form.reminderEnabled} onChange={e => set('reminderEnabled', e.target.checked)} /> リマインド</label><input className="input" type="datetime-local" value={form.remindAt || ''} onChange={e => set('remindAt', e.target.value)} /></>}
     {mode === 'todo' && <><input className="input" placeholder="ToDo" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.dueAt || selectedDate} onChange={e => set('dueAt', e.target.value)} /><select className="select" value={form.priority} onChange={e => set('priority', e.target.value)}><option value="low">低</option><option value="middle">中</option><option value="high">高</option></select><textarea className="textarea" placeholder="説明" value={form.description || ''} onChange={e => set('description', e.target.value)} /><label><input type="checkbox" checked={!!form.reminderEnabled} onChange={e => set('reminderEnabled', e.target.checked)} /> リマインド</label><input className="input" type="datetime-local" value={form.remindAt || ''} onChange={e => set('remindAt', e.target.value)} /></>}
-    {mode === 'expense' && <><div className="card" style={{ boxShadow: 'none' }}><h3>AI自然文入力</h3><input className="input" placeholder="例: 昨日Grabで35リンギット使った" value={aiText} disabled={aiBusy || saving} onChange={e => setAiText(e.target.value)} /><button className="btn secondary" disabled={!aiText.trim() || aiBusy || saving} onClick={async () => { setAiBusy(true); try { const res = await fetch('/api/ai/natural-entry', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify({ text: aiText }) }); const json = await res.json(); if (!res.ok || !json.entry) throw new Error(json.error || 'AI入力に失敗しました'); setForm(f => ({ ...f, ...json.entry, inputType: 'ai_text' })); } catch (err) { alert(err instanceof Error ? err.message : 'AI入力に失敗しました'); } finally { setAiBusy(false); } }}>{aiBusy ? '解析中...' : 'AIで入力'}</button></div><label>レシート写真</label><input className="input" type="file" accept="image/*" disabled={receiptBusy || saving} onChange={async e => { const file = e.target.files?.[0]; if (!file) return; setReceiptBusy(true); try { const url = await uploadImage(file, 'receipts'); const res = await fetch('/api/ai/receipt', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify({ imageUrl: url }) }); const json = await res.json(); if (!res.ok || !json.expense) throw new Error(json.error || 'レシート解析に失敗しました'); setForm(f => ({ ...f, ...json.expense, receiptImageUrl: url, inputType: 'receipt' })); } catch (err) { alert(err instanceof Error ? err.message : 'レシート解析に失敗しました'); } finally { setReceiptBusy(false); } }} />{receiptBusy && <p className="muted">レシート解析中...</p>}<input className="input" placeholder="タイトル" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.date} onChange={e => set('date', e.target.value)} /><input className="input" type="number" placeholder="金額" value={form.amount || ''} onChange={e => set('amount', e.target.value)} /><select className="select" value={form.currency} onChange={e => set('currency', e.target.value)}><option value="JPY">JPY</option><option value="MYR">MYR</option><option value="USD">USD</option></select><select className="select" value={form.category} onChange={e => set('category', e.target.value)}>{categories.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}</select><input className="input" placeholder="店名" value={form.shopName || ''} onChange={e => set('shopName', e.target.value)} /><textarea className="textarea" placeholder="メモ" value={form.memo || ''} onChange={e => set('memo', e.target.value)} /></>}
+    {mode === 'expense' && <><div className="card" style={{ boxShadow: 'none' }}><h3>AI自然文入力</h3><input className="input" placeholder="例: 毎月1日に家賃10万円" value={aiText} disabled={aiBusy || saving} onChange={e => setAiText(e.target.value)} /><button className="btn secondary" disabled={!aiText.trim() || aiBusy || saving} onClick={async () => { setAiBusy(true); try { const res = await fetch('/api/ai/natural-entry', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify({ text: aiText }) }); const json = await res.json(); if (!res.ok || !json.entry) throw new Error(json.error || 'AI入力に失敗しました'); setForm(f => ({ ...f, ...json.entry, inputType: 'ai_text' })); } catch (err) { alert(err instanceof Error ? err.message : 'AI入力に失敗しました'); } finally { setAiBusy(false); } }}>{aiBusy ? '解析中...' : 'AIで入力'}</button></div><label>レシート写真</label><input className="input" type="file" accept="image/*" disabled={receiptBusy || saving} onChange={async e => { const file = e.target.files?.[0]; if (!file) return; setReceiptBusy(true); try { const url = await uploadImage(file, 'receipts'); const res = await fetch('/api/ai/receipt', { method: 'POST', headers: await authedHeaders(user), body: JSON.stringify({ imageUrl: url }) }); const json = await res.json(); if (!res.ok || !json.expense) throw new Error(json.error || 'レシート解析に失敗しました'); setForm(f => ({ ...f, ...json.expense, receiptImageUrl: url, inputType: 'receipt' })); } catch (err) { alert(err instanceof Error ? err.message : 'レシート解析に失敗しました'); } finally { setReceiptBusy(false); } }} />{receiptBusy && <p className="muted">レシート解析中...</p>}<input className="input" placeholder="タイトル" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.date} onChange={e => set('date', e.target.value)} /><select className="select" value={form.recurrence || 'none'} onChange={e => set('recurrence', e.target.value)}>{recurrenceOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>{form.recurrence && form.recurrence !== 'none' && <input className="input" type="date" value={form.recurrenceEndAt || ''} onChange={e => set('recurrenceEndAt', e.target.value)} placeholder="繰り返し終了日" />}<input className="input" type="number" placeholder="金額" value={form.amount || ''} onChange={e => set('amount', e.target.value)} /><select className="select" value={form.currency} onChange={e => set('currency', e.target.value)}><option value="JPY">JPY</option><option value="MYR">MYR</option><option value="USD">USD</option></select><select className="select" value={form.category} onChange={e => set('category', e.target.value)}>{categories.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}</select><input className="input" placeholder="店名" value={form.shopName || ''} onChange={e => set('shopName', e.target.value)} /><textarea className="textarea" placeholder="メモ" value={form.memo || ''} onChange={e => set('memo', e.target.value)} /></>}
     {mode === 'anniversary' && <><input className="input" placeholder="記念日名" value={form.title || ''} onChange={e => set('title', e.target.value)} /><input className="input" type="date" value={form.date} onChange={e => set('date', e.target.value)} /><select className="select" value={form.repeat} onChange={e => set('repeat', e.target.value)}><option value="yearly">毎年</option><option value="none">一回だけ</option></select></>}
     {mode === 'note' && <><input className="input" placeholder="メモタイトル" value={form.title || ''} onChange={e => set('title', e.target.value)} /><textarea className="textarea" placeholder="共有メモ内容" value={form.content || ''} onChange={e => set('content', e.target.value)} /></>}
     <div className="space-select-box"><label>保存先スペース</label><select className="select" value={form.spaceId || activeSpaceId} onChange={e => changeSpace(e.target.value)}>{spaceOptions.map(space => <option key={space.id} value={space.id}>{space.name}（{space.type === 'personal' ? '自分' : space.type === 'pair' ? '1対1' : 'グループ'}）</option>)}</select></div>
     {mode !== 'note' && <><select className="select" value={form.visibility} onChange={e => set('visibility', e.target.value)} disabled={(spaceOptions.find(space => space.id === form.spaceId)?.type || fallbackSpace.type) === 'personal'}><option value="private">自分だけ</option><option value="shared">共有</option></select><label><input type="checkbox" checked={form.aiReadable} onChange={e => set('aiReadable', e.target.checked)} /> AI参照を許可</label></>}<div className="grid" style={{ marginTop: 14 }}><button className="btn secondary" disabled={saving} onClick={close}>閉じる</button><button className="btn" disabled={saving || receiptBusy || aiBusy} onClick={() => save(mode, normalize(mode, form))}>{saving ? '処理中...' : editTarget ? '更新' : '保存'}</button></div><p className="muted">保存先スペースと共有設定に応じて、AIが参照できる範囲が変わります。相手の呼び名: {partnerName || '未設定'}</p></div></div>;
 }
-function normalize(mode: AddMode, f: Record<string, any>) { if (mode === 'diary') { const { location, locationName, lat, lng, ...diary } = f; return { ...diary, tags: f.mood ? [f.mood] : [] }; } if (mode === 'event') return { ...f, startAt: new Date(f.startAt).toISOString(), endAt: f.endAt ? new Date(f.endAt).toISOString() : '', remindAt: f.remindAt ? new Date(f.remindAt).toISOString() : '' }; if (mode === 'expense') return { ...f, amount: Number(f.amount || 0), title: f.title || '支出', date: f.date || todayIso(), category: f.category || 'other', currency: f.currency || 'JPY' }; if (mode === 'todo') return { ...f, status: f.status || 'open', priority: f.priority || 'middle', remindAt: f.remindAt ? new Date(f.remindAt).toISOString() : '' }; return f; }
+function normalize(mode: AddMode, f: Record<string, any>) { if (mode === 'diary') { const { location, locationName, lat, lng, ...diary } = f; return { ...diary, tags: f.mood ? [f.mood] : [] }; } if (mode === 'event') return { ...f, startAt: new Date(f.startAt).toISOString(), endAt: f.endAt ? new Date(f.endAt).toISOString() : '', remindAt: f.remindAt ? new Date(f.remindAt).toISOString() : '', recurrence: f.recurrence || 'none', recurrenceEndAt: f.recurrence && f.recurrence !== 'none' ? f.recurrenceEndAt || '' : '' }; if (mode === 'expense') return { ...f, amount: Number(f.amount || 0), title: f.title || '支出', date: f.date || todayIso(), category: f.category || 'other', currency: f.currency || 'JPY', recurrence: f.recurrence || 'none', recurrenceEndAt: f.recurrence && f.recurrence !== 'none' ? f.recurrenceEndAt || '' : '' }; if (mode === 'todo') return { ...f, status: f.status || 'open', priority: f.priority || 'middle', remindAt: f.remindAt ? new Date(f.remindAt).toISOString() : '' }; return f; }
 
 function buildReminderCards(todos: Todo[], events: EventItem[], anniversaries: Anniversary[]) {
   const now = Date.now();

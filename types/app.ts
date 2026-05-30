@@ -4,6 +4,7 @@ export type ExpenseCategory = 'food' | 'daily_goods' | 'dating' | 'transport' | 
 export type TodoPriority = 'low' | 'middle' | 'high';
 export type TodoStatus = 'open' | 'done';
 export type Repeat = 'yearly' | 'none';
+export type Recurrence = 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly';
 export type SpaceType = 'personal' | 'pair' | 'group';
 export type SpaceRole = 'owner' | 'admin' | 'member';
 export type InviteStatus = 'active' | 'revoked';
@@ -75,6 +76,8 @@ export type EventItem = BaseDoc & {
   location?: string;
   remindAt?: string;
   reminderEnabled?: boolean;
+  recurrence?: Recurrence;
+  recurrenceEndAt?: string;
 };
 
 export type Todo = BaseDoc & {
@@ -102,6 +105,8 @@ export type Expense = BaseDoc & {
   memo?: string;
   receiptImageUrl?: string;
   receiptItems?: string[];
+  recurrence?: Recurrence;
+  recurrenceEndAt?: string;
 };
 
 export type Anniversary = BaseDoc & {

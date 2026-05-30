@@ -131,6 +131,33 @@ function inRange(dateText: string | undefined, range: ReturnType<typeof rangeFro
   const d = new Date(dateText); if (Number.isNaN(d.getTime())) return true;
   return d >= range.start && d < range.end;
 }
+function dateOnly(value?: string) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value.slice(0, 10);
+  return d.toISOString().slice(0, 10);
+}
+function recurringInRange(dateText: string | undefined, recurrence: string | undefined, recurrenceEndAt: string | undefined, range: ReturnType<typeof rangeFromQuestion>) {
+  if (!recurrence || recurrence === 'none') return inRange(dateText, range);
+  if (!dateText || !range) return true;
+  const startDate = dateOnly(dateText);
+  const endDate = recurrenceEndAt ? recurrenceEndAt.slice(0, 10) : '';
+  const cursor = new Date(range.start);
+  cursor.setHours(0, 0, 0, 0);
+  const end = new Date(range.end);
+  for (let guard = 0; cursor < end && guard < 370; guard++) {
+    const target = cursor.toISOString().slice(0, 10);
+    if (target >= startDate && (!endDate || target <= endDate)) {
+      const diff = Math.floor((new Date(`${target}T00:00:00Z`).getTime() - new Date(`${startDate}T00:00:00Z`).getTime()) / DAY);
+      if (recurrence === 'daily') return true;
+      if (recurrence === 'weekly' && diff % 7 === 0) return true;
+      if (recurrence === 'monthly' && target.slice(8, 10) === startDate.slice(8, 10)) return true;
+      if (recurrence === 'yearly' && target.slice(5) === startDate.slice(5)) return true;
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return false;
+}
 function escapeRegExp(text: string) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -186,9 +213,9 @@ function scoped(body: Body) {
   return {
     range,
     diaries: (data.diaries || []).filter((d:any)=>spaceMatch(d, spaces) && inRange(d.date, range) && ownerMatch(d, q, body.partnerName, body.partnerRelationship, body.currentUserId, members)),
-    events: (data.events || []).filter((e:any)=>spaceMatch(e, spaces) && inRange(e.startAt, range) && ownerMatch(e, q, body.partnerName, body.partnerRelationship, body.currentUserId, members)),
+    events: (data.events || []).filter((e:any)=>spaceMatch(e, spaces) && recurringInRange(e.startAt, e.recurrence, e.recurrenceEndAt, range) && ownerMatch(e, q, body.partnerName, body.partnerRelationship, body.currentUserId, members)),
     todos: (data.todos || []).filter((t:any)=>spaceMatch(t, spaces) && inRange(t.dueAt || t.createdAt, range) && ownerMatch(t, q, body.partnerName, body.partnerRelationship, body.currentUserId, members)),
-    expenses: (data.expenses || []).filter((e:any)=>spaceMatch(e, spaces) && inRange(e.date, range) && ownerMatch(e, q, body.partnerName, body.partnerRelationship, body.currentUserId, members)),
+    expenses: (data.expenses || []).filter((e:any)=>spaceMatch(e, spaces) && recurringInRange(e.date, e.recurrence, e.recurrenceEndAt, range) && ownerMatch(e, q, body.partnerName, body.partnerRelationship, body.currentUserId, members)),
     anniversaries: (data.anniversaries || []).filter((a:any)=>spaceMatch(a, spaces)),
     sharedNotes: (data.sharedNotes || []).filter((n:any)=>spaceMatch(n, spaces))
   };
