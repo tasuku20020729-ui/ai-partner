@@ -5,7 +5,7 @@ import { auth, db, storage } from '@/lib/firebase';
 import { createUserWithEmailAndPassword, onAuthStateChanged, signInWithEmailAndPassword, signOut, updateProfile, type User } from 'firebase/auth';
 import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, increment, onSnapshot, query, setDoc, updateDoc, where } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
-import { Bell, CalendarDays, CheckSquare, ChevronLeft, ChevronRight, Gift, Home, MessageCircle, NotebookPen, ReceiptText, Settings, StickyNote, Users, Copy, Share2, Plus, RotateCcw } from 'lucide-react';
+import { Bell, CalendarDays, CheckSquare, ChevronLeft, ChevronRight, Gift, Home, MessageCircle, NotebookPen, ReceiptText, Settings, StickyNote, Users, Copy, Share2, Plus, RotateCcw, Sparkles } from 'lucide-react';
 import { todayIso, toDateTimeLocalValue } from '@/lib/date';
 import { enablePwaPush } from '@/lib/push';
 import { personalSpaceId, personalSpaceName, scopeFieldsForSpace, sharedSpaceId } from '@/lib/spaces';
@@ -19,6 +19,7 @@ type ChatSession = { id: string; title: string; messages: ChatMessage[]; created
 type EditTarget = { mode: Exclude<AddMode, null>; id: string; data: Record<string, any> } | null;
 type SpaceSummary = Pick<Space, 'id' | 'name' | 'type'>;
 type MemberProfile = SpaceMember & { spaceName?: string };
+type TodoPriorityPlan = Record<string, { rank: number; score: number; reason: string }>;
 const initialAiMessage = '日記・予定・ToDo・支出・記念日・共有メモを横断検索できます。例:「明後日の予定は？」「今週の課題は？」「先週いくら使った？」';
 const createChatSession = (): ChatSession => {
   const now = new Date().toISOString();
@@ -294,6 +295,8 @@ export default function Page() {
   const [saving, setSaving] = useState(false);
   const [operationMessage, setOperationMessage] = useState('');
   const [operationError, setOperationError] = useState('');
+  const [todoPriorityPlan, setTodoPriorityPlan] = useState<TodoPriorityPlan>({});
+  const [todoSortMode, setTodoSortMode] = useState<'default' | 'ai'>('default');
   const [notificationEnabled, setNotificationEnabled] = useState(false);
   const [pushStatus, setPushStatus] = useState('未設定');
   const [selectedDate, setSelectedDate] = useState(todayIso());
@@ -598,6 +601,46 @@ export default function Page() {
     }
     setTab(item.tab || 'home');
   }, []);
+  const prioritizeTodos = useCallback(async () => {
+    if (!user || saving) return;
+    const openItems = visible.todos.filter(todo => todo.status !== 'done');
+    if (!openItems.length) {
+      setTodoPriorityPlan({});
+      setTodoSortMode('ai');
+      setOperationMessage('整理できる未完了ToDoがありません');
+      window.setTimeout(() => setOperationMessage(''), 1800);
+      return;
+    }
+    setSaving(true);
+    setOperationError('');
+    setOperationMessage('ToDoをAI整理しています...');
+    try {
+      const res = await fetch('/api/ai/prioritize-todos', {
+        method: 'POST',
+        headers: await authedHeaders(user),
+        body: JSON.stringify({
+          today: todayIso(),
+          todos: openItems,
+          events: visible.events.slice(0, 100)
+        })
+      });
+      const json = await res.json();
+      if (!res.ok || !Array.isArray(json.items)) throw new Error(json.error || 'ToDoのAI整理に失敗しました');
+      const nextPlan = json.items.reduce((acc: TodoPriorityPlan, item: { id?: string; score?: number; reason?: string }, index: number) => {
+        if (item.id) acc[item.id] = { rank: index + 1, score: Number(item.score || 0), reason: String(item.reason || '') };
+        return acc;
+      }, {});
+      setTodoPriorityPlan(nextPlan);
+      setTodoSortMode('ai');
+      setOperationMessage(json.fallback ? 'ToDoを期限と重要度で整理しました' : 'ToDoをAI整理しました');
+      window.setTimeout(() => setOperationMessage(''), 1800);
+    } catch (e) {
+      setOperationError(e instanceof Error ? e.message : 'ToDoのAI整理に失敗しました');
+      setOperationMessage('');
+    } finally {
+      setSaving(false);
+    }
+  }, [saving, user, visible.events, visible.todos]);
 
   if (loading) return <div className="shell"><main className="content"><div className="card">読み込み中...</div></main></div>;
   if (!user) return <Login name={name} setName={setName} email={email} setEmail={setEmail} password={password} setPassword={setPassword} login={login} saving={saving} />;
@@ -612,7 +655,7 @@ export default function Page() {
       {tab === 'home' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} chooseDate={chooseDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} onEdit={openEdit} onDelete={remove} currentUserId={user.uid} naturalAdd={naturalAdd} setTab={setTab} saving={saving} spaces={spaces} groupId={groupId} viewAllSpaces={viewAllSpaces} activeSpaceIds={activeSpaceIds} switchSpace={switchSpace} switchAllSpaces={switchAllSpaces} />}
       {tab === 'diary' && <DiaryView diaries={diaries} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} />}
       {tab === 'calendar' && <CalendarHomeView selectedDate={selectedDate} setSelectedDate={setSelectedDate} chooseDate={chooseDate} calendarMonth={calendarMonth} setCalendarMonth={setCalendarMonth} diaries={diaries} events={events} todos={todos} expenses={expenses} anniversaries={anniversaries} monthExpense={monthExpense} openAdd={openAddForDate} onEdit={openEdit} onDelete={remove} currentUserId={user.uid} naturalAdd={naturalAdd} setTab={setTab} saving={saving} spaces={spaces} groupId={groupId} viewAllSpaces={viewAllSpaces} activeSpaceIds={activeSpaceIds} switchSpace={switchSpace} switchAllSpaces={switchAllSpaces} />}
-      {tab === 'todo' && <TodoView todos={todos} currentUserId={user.uid} toggleTodo={toggleTodo} onEdit={openEdit} onDelete={remove} />}
+      {tab === 'todo' && <TodoView todos={todos} currentUserId={user.uid} toggleTodo={toggleTodo} onEdit={openEdit} onDelete={remove} prioritizeTodos={prioritizeTodos} todoPriorityPlan={todoPriorityPlan} todoSortMode={todoSortMode} setTodoSortMode={setTodoSortMode} saving={saving} />}
       {tab === 'expense' && <ExpenseView expenses={expenses} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} setAddMode={setAddMode} />}
       {tab === 'ai' && <AIView chat={chat} chatSessions={chatSessions} activeChatSessionId={activeChatSessionId} setActiveChatSessionId={setActiveChatSessionId} startChatSession={startChatSession} resetActiveChatSession={resetActiveChatSession} openRelated={openRelated} question={question} setQuestion={setQuestion} ask={askAI} saving={saving} activeScopeName={viewAllSpaces ? `すべてのスペース（${activeSpaceIds.length || 1}件）` : activeSpaceName || personalSpaceName} />}
       {tab === 'notes' && <NotesView notes={sharedNotes} currentUserId={user.uid} onEdit={openEdit} onDelete={remove} setAddMode={setAddMode} />}
@@ -1317,7 +1360,45 @@ function HomeView({ setAddMode, todayEvents, openTodos, monthExpense, setTab, me
 }
 function DiaryView({ diaries, currentUserId, onEdit, onDelete }: any) { return <Section title="日記">{diaries.map((d: Diary) => <article className="card" key={d.id}><div className="row"><b>{d.title}</b><span>{d.visibility}</span></div><p className="muted">{d.date} / {d.ownerName}</p><p>{d.content}</p>{d.photos?.map(url => <img key={url} className="photo" src={url} alt="diary" />)}{d.userId === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('diary', d)}>編集</button><button className="link" onClick={() => onDelete('diary', d.id)}>削除</button></div>}</article>)}</Section>; }
 function CalendarView({ events, anniversaries, currentUserId, onDelete, setAddMode }: any) { return <Section title="予定・記念日"><div className="grid"><button className="btn" onClick={() => setAddMode('event')}>予定追加</button><button className="btn secondary" onClick={() => setAddMode('anniversary')}>記念日追加</button></div>{events.map((e: EventItem) => <article className="card" key={e.id}><div className="row"><b>{e.title}</b><span>{e.ownerName}</span></div><p className="muted">{new Date(e.startAt).toLocaleString('ja-JP')} {e.location}</p><p>{e.description}</p>{e.remindAt && <p className="muted">リマインド: {new Date(e.remindAt).toLocaleString('ja-JP')}</p>}{e.userId === currentUserId && <button className="link" onClick={() => onDelete('event', e.id)}>削除</button>}</article>)}{anniversaries.map((a: Anniversary) => <article className="card accent" key={a.id}><b>🎁 {a.title}</b><p className="muted">{a.date} / {a.repeat === 'yearly' ? '毎年' : '一回'}</p>{a.userId === currentUserId && <button className="link" onClick={() => onDelete('anniversary', a.id)}>削除</button>}</article>)}</Section>; }
-function TodoView({ todos, currentUserId, toggleTodo, onEdit, onDelete }: any) { return <Section title="ToDo">{todos.map((t: Todo) => <article className="card" key={t.id}><label className="row"><span><input type="checkbox" checked={t.status === 'done'} disabled={t.userId !== currentUserId} onChange={() => toggleTodo(t)} /> <b className={t.status === 'done' ? 'done' : ''}>{t.title}</b></span><span>{t.priority}</span></label><p className="muted">期限: {t.dueAt || '-'} / {t.ownerName}</p>{t.remindAt && <p className="muted">リマインド: {new Date(t.remindAt).toLocaleString('ja-JP')}</p>}<p>{t.description}</p>{t.userId === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('todo', t)}>編集</button><button className="link" onClick={() => onDelete('todo', t.id)}>削除</button></div>}</article>)}</Section>; }
+function TodoView({ todos, currentUserId, toggleTodo, onEdit, onDelete, prioritizeTodos, todoPriorityPlan, todoSortMode, setTodoSortMode, saving }: { todos: Todo[]; currentUserId: string; toggleTodo: (todo: Todo) => void | Promise<void>; onEdit: (mode: Exclude<AddMode, null>, item: Record<string, any>) => void; onDelete: (type: string, id: string) => void; prioritizeTodos: () => void | Promise<void>; todoPriorityPlan: TodoPriorityPlan; todoSortMode: 'default' | 'ai'; setTodoSortMode: (mode: 'default' | 'ai') => void; saving: boolean }) {
+  const sortedTodos = useMemo(() => {
+    if (todoSortMode !== 'ai') return todos;
+    return [...todos].sort((a, b) => {
+      if (a.status !== b.status) return a.status === 'done' ? 1 : -1;
+      const ar = todoPriorityPlan[a.id]?.rank ?? 9999;
+      const br = todoPriorityPlan[b.id]?.rank ?? 9999;
+      if (ar !== br) return ar - br;
+      return String(a.dueAt || '9999-12-31').localeCompare(String(b.dueAt || '9999-12-31'));
+    });
+  }, [todoPriorityPlan, todoSortMode, todos]);
+  const openCount = todos.filter(todo => todo.status !== 'done').length;
+  return <Section title="ToDo">
+    <div className="todo-tools">
+      <div>
+        <b>未完了 {openCount}件</b>
+        <p className="muted">期限・優先度・説明文・関連予定から今日やる順に整理します。</p>
+      </div>
+      <div className="todo-tool-actions">
+        {todoSortMode === 'ai' && <button className="btn secondary" disabled={saving} onClick={() => setTodoSortMode('default')}>通常順</button>}
+        <button className="btn primary" disabled={saving || openCount === 0} onClick={prioritizeTodos}><Sparkles size={17} />AI整理</button>
+      </div>
+    </div>
+    {sortedTodos.map((t: Todo) => {
+      const plan = todoPriorityPlan[t.id];
+      return <article className={`card todo-card ${plan && todoSortMode === 'ai' ? 'ai-ranked' : ''}`} key={t.id}>
+        <label className="row todo-title-row">
+          <span><input type="checkbox" checked={t.status === 'done'} disabled={t.userId !== currentUserId || saving} onChange={() => toggleTodo(t)} /> <b className={t.status === 'done' ? 'done' : ''}>{t.title}</b></span>
+          <span className="todo-priority">{priorityLabel[t.priority]}</span>
+        </label>
+        <p className="muted">期限: {t.dueAt || '-'} / {t.ownerName}</p>
+        {t.remindAt && <p className="muted">リマインド: {new Date(t.remindAt).toLocaleString('ja-JP')}</p>}
+        {plan && todoSortMode === 'ai' && <div className="todo-ai-reason"><span className="todo-rank">#{plan.rank}</span><p>{plan.reason}</p></div>}
+        <p>{t.description}</p>
+        {t.userId === currentUserId && <div className="row-actions"><button className="link edit-link" disabled={saving} onClick={() => onEdit('todo', t)}>編集</button><button className="link" disabled={saving} onClick={() => onDelete('todo', t.id)}>削除</button></div>}
+      </article>;
+    })}
+  </Section>;
+}
 function ExpenseView({ expenses, currentUserId, onEdit, onDelete, setAddMode }: any) { const total = expenses.reduce((s: number, e: Expense) => s + Number(e.amountBase || 0), 0); return <Section title="支出"><button className="btn" onClick={() => setAddMode('expense')}>支出を追加</button><div className="card"><h3>合計</h3><div className="big">{yen(total)}</div></div>{expenses.map((e: Expense) => <article className="card" key={e.id}><div className="row"><b>{e.title}</b><span>{e.amount.toLocaleString()} {e.currency}</span></div><p className="muted">{e.date} / {categoryLabel[e.category]} / {e.ownerName}</p><p>{e.memo}</p>{e.receiptImageUrl && <img className="photo" src={e.receiptImageUrl} alt="receipt" />}{e.userId === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('expense', e)}>編集</button><button className="link" onClick={() => onDelete('expense', e.id)}>削除</button></div>}</article>)}</Section>; }
 function NotesView({ notes, currentUserId, onEdit, onDelete, setAddMode }: any) { return <Section title="共有メモ"><button className="btn" onClick={() => setAddMode('note')}>共有メモ追加</button>{notes.map((n: SharedNote) => <article className="card" key={n.id}><b>{n.title}</b><p className="muted">{n.createdByName}</p><p>{n.content}</p>{n.createdBy === currentUserId && <div className="row-actions"><button className="link edit-link" onClick={() => onEdit('note', n)}>編集</button><button className="link" onClick={() => onDelete('note', n.id)}>削除</button></div>}</article>)}</Section>; }
 function AIView({ chat, chatSessions, activeChatSessionId, setActiveChatSessionId, startChatSession, resetActiveChatSession, openRelated, question, setQuestion, ask, saving, activeScopeName }: any) {

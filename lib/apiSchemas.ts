@@ -46,6 +46,28 @@ export const askBodySchema = z.object({
   data: z.unknown().optional()
 });
 
+export const todoPrioritizeSchema = z.object({
+  today: z.string().max(20).optional(),
+  todos: z.array(z.object({
+    id: z.string().min(1),
+    title: z.string().max(300).optional(),
+    description: z.string().max(3000).optional(),
+    dueAt: z.string().max(80).optional(),
+    priority: z.enum(['low', 'middle', 'high']).optional(),
+    status: z.enum(['open', 'done']).optional(),
+    ownerName: z.string().max(120).optional(),
+    remindAt: z.string().max(80).optional(),
+    reminderEnabled: z.boolean().optional()
+  })).max(200),
+  events: z.array(z.object({
+    id: z.string().optional(),
+    title: z.string().max(300).optional(),
+    startAt: z.string().max(80).optional(),
+    endAt: z.string().max(80).optional(),
+    location: z.string().max(300).optional()
+  })).max(100).optional()
+});
+
 export const receiptBodySchema = z.object({
   imageUrl: z.string().url()
 });
